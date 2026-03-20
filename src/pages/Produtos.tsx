@@ -468,8 +468,20 @@ export default function Produtos() {
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-zinc-500 uppercase">Unidade</label>
-                <input value={form.unidade || 'Und'} onChange={(e) => updateField('unidade', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none" />
+                <select 
+                  value={form.unidade || 'Und'} 
+                  onChange={(e) => updateField('unidade', e.target.value)}
+                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500 appearance-none cursor-pointer"
+                >
+                  <option value="Und">Unidade (Und)</option>
+                  <option value="m²">Metro Quadrado (m²)</option>
+                  <option value="m">Metro Linear (m)</option>
+                  <option value="litro">Litro (L)</option>
+                  <option value="kg">Quilograma (kg)</option>
+                  <option value="cm">Centímetro (cm)</option>
+                  <option value="cx">Caixa (cx)</option>
+                  <option value="par">Par</option>
+                </select>
               </div>
             </div>
 
