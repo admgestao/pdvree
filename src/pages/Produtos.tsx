@@ -99,6 +99,7 @@ export default function Produtos() {
   const filtered = produtos.filter((p) => {
     const matchesSearch = 
       p.nome?.toLowerCase().includes(search.toLowerCase()) ||
+      p.marca?.toLowerCase().includes(search.toLowerCase()) ||
       p.codigo?.toLowerCase().includes(search.toLowerCase()) ||
       p.categoria?.toLowerCase().includes(search.toLowerCase());
     
@@ -147,6 +148,7 @@ export default function Produtos() {
             <thead>
               <tr>
                 <th>Nome</th>
+                <th>Marca</th>
                 <th>Categoria</th>
                 <th>Estoque</th>
                 <th>Preço Custo</th>
@@ -158,6 +160,7 @@ export default function Produtos() {
               ${filtered.map(p => `
                 <tr>
                   <td>${p.nome}</td>
+                  <td>${p.marca || '-'}</td>
                   <td>${p.categoria || '-'}</td>
                   <td>${p.estoque_atual} ${p.unidade}</td>
                   <td>${formatCurrency(p.custo)}</td>
@@ -309,7 +312,7 @@ export default function Produtos() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome, código ou categoria..."
+            placeholder="Buscar por nome, marca, código ou categoria..."
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
           />
         </div>
@@ -336,6 +339,7 @@ export default function Produtos() {
               <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
                 <tr>
                   <th className="p-3 font-medium">Nome</th>
+                  <th className="p-3 font-medium">Marca</th>
                   <th className="p-3 font-medium text-right">Custo Un.</th>
                   <th className="p-3 font-medium text-right">Estoque</th>
                   <th className="p-3 font-medium text-right">Vl. Estoque</th>
@@ -362,6 +366,9 @@ export default function Produtos() {
                           <span className="text-[10px] text-zinc-500">{p.categoria || 'Geral'}</span>
                         </div>
                         {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1 rounded uppercase w-fit">Sem Estoque</span>}
+                      </td>
+                      <td className="p-3 text-zinc-400 italic">
+                        {p.marca || '-'}
                       </td>
                       <td className="p-3 text-right font-mono text-orange-400/80">{formatCurrency(p.custo)}</td>
                       <td className={`p-3 text-right font-mono font-bold ${isZerado ? 'text-red-500' : ''}`}>{p.estoque_atual} {p.unidade}</td>
@@ -395,6 +402,12 @@ export default function Produtos() {
               <div className="space-y-1">
                 <label className="text-xs font-medium text-zinc-500 uppercase">Nome *</label>
                 <input value={form.nome || ''} onChange={(e) => updateField('nome', e.target.value)}
+                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500" />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-zinc-500 uppercase">Marca</label>
+                <input value={form.marca || ''} onChange={(e) => updateField('marca', e.target.value)}
                   className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500" />
               </div>
               
@@ -474,6 +487,7 @@ export default function Produtos() {
                   className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500 appearance-none cursor-pointer"
                 >
                   <option value="Und">Unidade (Und)</option>
+                  <option value="Pacote">Pacote (Pct)</option>
                   <option value="m²">Metro Quadrado (m²)</option>
                   <option value="m">Metro Linear (m)</option>
                   <option value="litro">Litro (L)</option>
