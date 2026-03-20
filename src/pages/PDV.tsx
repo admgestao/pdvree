@@ -80,7 +80,6 @@ export default function PDV() {
     return localStorage.getItem('@pdv:vendedor_id') || '';
   });
 
-  // ESTADOS PARA VALIDAÇÃO DO CAIXA
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [caixaAberto, setCaixaAberto] = useState(false);
 
@@ -102,7 +101,6 @@ export default function PDV() {
 
   async function loadCaixaStatus() {
     try {
-      // Pega a data de hoje no fuso horário local no formato YYYY-MM-DD
       const hoje = new Date().toLocaleDateString('en-CA');
       const { data } = await supabase
         .from('caixa_movimentos')
@@ -111,12 +109,10 @@ export default function PDV() {
         .lte('criado_em', `${hoje}T23:59:59`)
         .order('criado_em', { ascending: false });
 
-      // Verifica apenas o status do último movimento registrado no dia
       if (data && data.length > 0) {
         const ultimoMovimento = data[0];
         setCaixaAberto(ultimoMovimento.tipo === 'abertura');
       } else {
-        // Se não tem nenhum movimento hoje, o caixa está fechado
         setCaixaAberto(false);
       }
     } catch (err) {
@@ -191,21 +187,36 @@ export default function PDV() {
   }, [search, searchProducts]);
 
   const addToCart = (product: Produto) => {
-    if (product.estoque_atual <= 0) { toast.error('Produto sem estoque disponível'); return; }
+    if (product.estoque_atual <= 0) { 
+      toast.error('Produto sem estoque disponível'); 
+      return; 
+    }
+    
     const price = promocoes[product.id] || product.preco_venda;
+    
     setCart((prev) => {
       const existing = prev.find((i) => i.id === product.id);
       if (existing) {
-        if (existing.quantity >= product.estoque_atual) { toast.error('Limite atingido'); return prev; }
+        if (existing.quantity >= product.estoque_atual) { 
+          toast.error('Limite de estoque atingido'); 
+          return prev; 
+        }
         return prev.map((i) => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
       }
       return [...prev, {
-        id: product.id, nome: product.nome, codigo: product.codigo,
-        price, preco_custo: product.preco_custo, quantity: 1, stock: product.estoque_atual,
-        discount: 0, discountType: 'percent' as const,
+        id: product.id, 
+        nome: product.nome, 
+        codigo: product.codigo,
+        price, 
+        preco_custo: product.preco_custo, 
+        quantity: 1, 
+        stock: product.estoque_atual,
+        discount: 0, 
+        discountType: 'percent' as const,
       }];
     });
-    Search('');
+
+    setSearch('');
     setShowResults(false);
   };
 
