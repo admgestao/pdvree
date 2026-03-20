@@ -74,7 +74,6 @@ export default function Usuarios() {
     }
   }
 
-  // Se o AuthContext estiver correto, isAdmin será true para o usuário 'planex'
   if (!isAdmin) {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3 text-muted-foreground">
@@ -117,17 +116,25 @@ export default function Usuarios() {
       return;
     }
 
-    // Sincroniza o campo 'funcao' com o 'cargo' para manter o AuthContext funcionando
-    const userData = {
-      ...editing,
+    // Criamos um payload limpo apenas com o que o banco de dados possui de colunas
+    // Isso evita o erro de "coluna inexistente" caso 'funcao' não exista na tabela 'usuarios'
+    const payload = {
+      id: editing.id,
+      nome_usuario: editing.nome_usuario,
+      senha: editing.senha,
+      nome_completo: editing.nome_completo,
+      cargo: editing.cargo,
+      permissoes: editing.permissoes,
+      // Se a sua tabela tiver a coluna 'funcao', mantenha a linha abaixo. 
+      // Se não tiver, o Supabase daria erro ao tentar salvar o objeto 'editing' inteiro.
       funcao: editing.cargo === 'gerente' ? 'admin' : 'operador'
     };
 
-    const { error } = await supabase.from('usuarios').upsert(userData);
+    const { error } = await supabase.from('usuarios').upsert(payload);
 
     if (error) {
       toast.error('Erro ao salvar no banco');
-      console.error("Erro:", error);
+      console.error("Erro detalhado:", error);
       return;
     }
 
