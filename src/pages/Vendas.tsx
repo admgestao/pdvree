@@ -11,6 +11,7 @@ interface Venda {
   subtotal: number;
   desconto: number;
   custo_adicional: number;
+  desc_custo_adicional?: string;
   total: number;
   forma_pagamento_id: string;
   troco: number;
@@ -65,7 +66,6 @@ export default function Vendas() {
       let queryVendas = supabase.from('vendas').select('*').order('criado_em', { ascending: false });
       if (startDate) queryVendas = queryVendas.gte('criado_em', startDate);
       if (endDate) queryVendas = queryVendas.lte('criado_em', endDate + 'T23:59:59');
-
       const { data: vendasData } = await queryVendas;
 
       const [resClientes, resFormas] = await Promise.all([
@@ -78,7 +78,6 @@ export default function Vendas() {
         cliente_nome: resClientes.data?.find(c => c.id === v.cliente_id)?.nome || 'Consumidor final',
         forma_nome: resFormas.data?.find(f => f.id === v.forma_pagamento_id)?.nome || 'Não informado',
       }));
-
       setVendas(mappedVendas);
 
       if (mappedVendas.length > 0) {
@@ -87,7 +86,7 @@ export default function Vendas() {
           .from('vendas_itens')
           .select('*')
           .in('venda_id', idsVendas);
-        
+
         const mappedItens = (itensData || []).map(item => {
           const vendaPai = mappedVendas.find(v => v.id === item.venda_id);
           return { 
@@ -118,7 +117,7 @@ export default function Vendas() {
     if (!win) return;
     win.document.write(`
       <html>
-        <head><title>Venda</title><style>body { font-family: sans-serif; padding:20px } .linha { display:flex; justify-content:space-between; margin-bottom:5px }</style></head>
+        <head><title>Venda</title><style>body { font-family: sans-serif; padding:20px } .linha { display:flex; justify-content:space-between; margin-bottom:5px } .obs { font-size: 12px; margin-top: 10px; border-top: 1px solid #ccc; padding-top: 5px; }</style></head>
         <body>
           <h2>Comprovante</h2>
           <p><b>Data:</b> ${formatDate(venda.criado_em)}</p>
@@ -127,7 +126,11 @@ export default function Vendas() {
           <hr/>
           ${itens.map(i => `<div class="linha"><span>${i.produto_nome} x${i.quantidade}</span><span>${formatCurrency(i.total)}</span></div>`).join('')}
           <hr/>
+          ${venda.desconto > 0 ? `<div class="linha"><span>Desconto:</span><span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
+          ${venda.custo_adicional > 0 ? `<div class="linha"><span>${venda.desc_custo_adicional || 'Adicional'}:</span><span>+ ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
+          <hr/>
           <h3>Total: ${formatCurrency(venda.total)}</h3>
+          ${venda.observacao ? `<div class="obs"><b>Obs:</b> ${venda.observacao}</div>` : ''}
         </body>
       </html>
     `);
@@ -231,7 +234,6 @@ export default function Vendas() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 animate-fade-in">
-      
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Histórico</h1>
@@ -372,7 +374,7 @@ export default function Vendas() {
               <p><b>Pagamento:</b> {selectedVenda.forma_nome}</p>
             </div>
 
-            <div className="max-h-[300px] overflow-y-auto space-y-2 py-2">
+            <div className="max-h-[200px] overflow-y-auto space-y-2 py-2">
               {itensDetalhe.map(i => (
                 <div key={i.id} className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
                   <span>{i.produto_nome} <b className="text-primary">x{i.quantidade}</b></span>
@@ -381,8 +383,34 @@ export default function Vendas() {
               ))}
             </div>
 
+            {/* Composição do Valor Final */}
+            <div className="space-y-1.5 border-t border-border/50 pt-2 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>Subtotal Itens:</span>
+                <span>{formatCurrency(selectedVenda.subtotal)}</span>
+              </div>
+              {selectedVenda.desconto > 0 && (
+                <div className="flex justify-between text-emerald-500 font-bold">
+                  <span>Desconto Aplicado:</span>
+                  <span>- {formatCurrency(selectedVenda.desconto)}</span>
+                </div>
+              )}
+              {selectedVenda.custo_adicional > 0 && (
+                <div className="flex justify-between text-blue-500 font-bold">
+                  <span>{selectedVenda.desc_custo_adicional || 'Custo Adicional'}:</span>
+                  <span>+ {formatCurrency(selectedVenda.custo_adicional)}</span>
+                </div>
+              )}
+              {selectedVenda.observacao && (
+                <div className="mt-3 p-3 bg-secondary/50 rounded-xl text-xs text-muted-foreground border border-border/50">
+                  <p className="font-black uppercase mb-1 text-[10px] text-primary">Observações do Pedido:</p>
+                  {selectedVenda.observacao}
+                </div>
+              )}
+            </div>
+
             <div className="bg-secondary p-4 rounded-xl flex justify-between items-center">
-              <span className="font-bold text-muted-foreground">TOTAL DA VENDA</span>
+              <span className="font-bold text-muted-foreground">TOTAL FINAL</span>
               <span className="text-xl font-black text-primary">{formatCurrency(selectedVenda.total)}</span>
             </div>
 

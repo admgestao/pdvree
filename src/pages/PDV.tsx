@@ -60,7 +60,6 @@ export default function PDV() {
   const [custoAdicional, setCustoAdicional] = useState(0);
   const [descCusto, setDescCusto] = useState('');
   const [custoNoLucro, setCustoNoLucro] = useState(false);
-  
   const [descontoGeral, setDescontoGeral] = useState(0);
   const [descontoGeralTipo, setDescontoGeralTipo] = useState<'percent' | 'fixed'>('percent');
   const [showResults, setShowResults] = useState(false);
@@ -79,7 +78,6 @@ export default function PDV() {
   const [vendedorId, setVendedorId] = useState(() => {
     return localStorage.getItem('@pdv:vendedor_id') || '';
   });
-
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [caixaAberto, setCaixaAberto] = useState(false);
 
@@ -131,7 +129,6 @@ export default function PDV() {
         descricao: 'Abertura rápida via PDV',
         usuario_id: user?.name || 'Sistema'
       });
-
       if (error) return toast.error('Erro ao abrir caixa: ' + error.message);
       toast.success('Caixa aberto com sucesso!');
       loadCaixaStatus();
@@ -188,12 +185,11 @@ export default function PDV() {
 
   const addToCart = (product: Produto) => {
     if (product.estoque_atual <= 0) { 
-      toast.error('Produto sem estoque disponível'); 
+      toast.error('Produto sem estoque disponível');
       return; 
     }
     
     const price = promocoes[product.id] || product.preco_venda;
-    
     setCart((prev) => {
       const existing = prev.find((i) => i.id === product.id);
       if (existing) {
@@ -243,9 +239,15 @@ export default function PDV() {
     return Math.max(0, base - item.discount);
   };
 
+  const subtotalSemDesconto = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const totalItensComDescontoIndividual = cart.reduce((sum, item) => sum + getItemTotal(item), 0);
+  const descontoDosItens = subtotalSemDesconto - totalItensComDescontoIndividual;
   const totalCustoItens = cart.reduce((sum, item) => sum + (item.preco_custo * item.quantity), 0);
-  const descontoGeralVal = descontoGeralTipo === 'percent' ? totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
+  
+  const descontoGeralVal = descontoGeralTipo === 'percent' ?
+    totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
+  
+  const totalDescontoAplicado = descontoDosItens + descontoGeralVal;
   const totalBruto = Math.max(0, totalItensComDescontoIndividual - descontoGeralVal + (Number(custoAdicional) || 0));
   
   const creditoDisponivel = clienteObj?.credito || 0;
@@ -276,18 +278,18 @@ export default function PDV() {
     setSaving(true);
     try {
       const selectedVendedor = vendedores.find(v => v.id === vendedorId);
-
+      
       const { data: venda, error: vendaErr } = await supabase.from('vendas').insert({
         cliente_id: clienteObj?.id || null,
         cliente_nome_manual: clienteObj ? null : clienteManual,
         usuario_id: user?.id || 'Operador',
         vendedor_nome: selectedVendedor?.nome_usuario || 'Não Informado',
-        subtotal: totalItensComDescontoIndividual, 
-        desconto: descontoGeralVal, 
-        custo_adicional: custoAdicional,
+        subtotal: subtotalSemDesconto, 
+        desconto: totalDescontoAplicado, 
+        custo_adicional: Number(custoAdicional) || 0,
         desc_custo_adicional: descCusto, 
         custo_no_lucro: custoNoLucro,
-        total, 
+        total: total, 
         total_custo: totalCustoItens, 
         lucro_liquido: lucroLiquido,
         valor_credito_usado: valorAbatidoCredito, 
@@ -328,7 +330,6 @@ export default function PDV() {
           valor: total,
           descricao: 'Venda paga em dinheiro.'
         });
-
         if (troco > 0) {
           await supabase.from('caixa').insert({
             usuario_id: user?.id,
@@ -343,7 +344,7 @@ export default function PDV() {
       setShowFinalize(false);
       setTimeout(() => { window.location.reload(); }, 2000);
     } catch (err: any) { 
-      toast.error('Erro ao finalizar: ' + err.message); 
+      toast.error('Erro ao finalizar: ' + err.message);
     }
     setSaving(false);
   }
@@ -488,15 +489,11 @@ export default function PDV() {
             <select 
               value={vendedorId} 
               onChange={(e) => handleVendedorChange(e.target.value)}
-              className={`w-full h-10 px-3 rounded-lg border text-sm font-bold transition-all duration-300 outline-none
-                ${!vendedorId 
-                  ? 'animate-pulse-yellow border-yellow-500 text-yellow-700' 
-                  : 'bg-green-500/10 border-green-500 text-green-600'
-                }`}
+              className={`w-full h-10 px-3 rounded-lg border text-sm font-bold transition-all duration-300 outline-none ${!vendedorId ? 'animate-pulse-yellow border-yellow-500 text-yellow-700' : 'bg-green-500/10 border-green-500 text-green-600'}`}
             >
               <option value="" className="bg-background text-foreground">-- SELECIONE O VENDEDOR --</option>
               {vendedores.map(v => (
-                <option key={v.id} value={v.id} className="bg-background text-foreground">
+                 <option key={v.id} value={v.id} className="bg-background text-foreground">
                   {v.nome_usuario.toUpperCase()}
                 </option>
               ))}
@@ -571,11 +568,17 @@ export default function PDV() {
         <div className="border-t border-border p-4 space-y-3 bg-card/80 backdrop-blur-sm">
           <div className="space-y-1.5 text-xs">
             <div className="flex justify-between text-muted-foreground">
-              <span>Subtotal Itens</span>
-              <span className="font-mono">{fCurrency(totalItensComDescontoIndividual)}</span>
+              <span>Subtotal Bruto</span>
+              <span className="font-mono">{fCurrency(subtotalSemDesconto)}</span>
             </div>
+            {descontoDosItens > 0 && (
+              <div className="flex justify-between text-emerald-500 font-medium">
+                <span>Descontos (Itens)</span>
+                <span className="font-mono">-{fCurrency(descontoDosItens)}</span>
+              </div>
+            )}
             {descontoGeralVal > 0 && (
-              <div className="flex justify-between text-red-500 font-medium">
+              <div className="flex justify-between text-emerald-500 font-medium">
                 <span>Desconto Geral</span>
                 <span className="font-mono">-{fCurrency(descontoGeralVal)}</span>
               </div>
@@ -594,11 +597,18 @@ export default function PDV() {
             )}
           </div>
           <div className="flex justify-between items-center pt-2 border-t border-border">
-            <span className="text-base font-bold">Total Final</span>
+            <div className="flex flex-col">
+              <span className="text-base font-bold">Total Final</span>
+              {totalDescontoAplicado > 0 && (
+                <span className="text-[10px] font-bold text-emerald-500 uppercase tracking-tight">
+                  Economia: {fCurrency(totalDescontoAplicado)}
+                </span>
+              )}
+            </div>
             <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={() => { setCart([]); setCustoAdicional(0); setDescCusto(''); setUsarCredito(false); }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
+            <button onClick={() => { setCart([]); setCustoAdicional(0); setDescCusto(''); setUsarCredito(false); setObservacao(''); }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
             <button 
               disabled={cart.length === 0} 
               onClick={() => {
@@ -658,6 +668,7 @@ export default function PDV() {
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="rounded-xl bg-card border border-primary p-8 text-center shadow-xl animate-in zoom-in-95">
             <Check className="h-12 w-12 text-primary mx-auto mb-4" />
+            <p className="font-bold text-lg">Venda finalizada com sucesso!</p>
           </div>
         </div>
       )}
