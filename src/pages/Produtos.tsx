@@ -107,11 +107,21 @@ export default function Produtos() {
     return matchesSearch && matchesEstoque;
   });
 
-  // Cálculos do Cabeçalho
   const totalProdutos = filtered.length;
   const valorTotalEstoqueCusto = filtered.reduce((acc, p) => acc + (Number(p.custo) * Number(p.estoque_atual)), 0);
   const valorTotalVendaPotencial = filtered.reduce((acc, p) => acc + (Number(p.preco_venda) * Number(p.estoque_atual)), 0);
   const lucroTotalProjetado = valorTotalVendaPotencial - valorTotalEstoqueCusto;
+
+  function formatCurrency(value: number | string) {
+    const amount = typeof value === 'string' ? parseFloat(value.replace(/[^\d]/g, '')) / 100 : value;
+    if (isNaN(amount)) return 'R$ 0,00';
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(amount);
+  }
+
+  function parseCurrencyToNumber(value: string): number {
+    const cleanValue = value.replace(/[^\d]/g, '');
+    return cleanValue ? parseFloat(cleanValue) / 100 : 0;
+  }
 
   function imprimirRelatorio() {
     const win = window.open('', '_blank');
@@ -150,9 +160,9 @@ export default function Produtos() {
                   <td>${p.nome}</td>
                   <td>${p.categoria || '-'}</td>
                   <td>${p.estoque_atual} ${p.unidade}</td>
-                  <td>R$ ${Number(p.custo).toFixed(2)}</td>
-                  <td>R$ ${Number(p.preco_venda).toFixed(2)}</td>
-                  <td>R$ ${Number(p.custo * p.estoque_atual).toFixed(2)}</td>
+                  <td>${formatCurrency(p.custo)}</td>
+                  <td>${formatCurrency(p.preco_venda)}</td>
+                  <td>${formatCurrency(p.custo * p.estoque_atual)}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -187,16 +197,24 @@ export default function Produtos() {
   }
 
   function updateField(field: string, value: any) {
-    const next = { ...form, [field]: value };
+    let nextValue = value;
+    
+    if (['custo', 'preco_venda'].includes(field)) {
+      nextValue = parseCurrencyToNumber(value);
+    }
+
+    const next = { ...form, [field]: nextValue };
     const custo = Number(next.custo) || 0;
-    const venda = Number(next.preco_venda) || 0;
+    let venda = Number(next.preco_venda) || 0;
     const estoque = Number(next.estoque_atual) || 0;
+    
     if ((field === 'custo' || field === 'preco_venda') && custo > 0) {
-      next.margem = ((venda - custo) / custo) * 100;
+      next.margem = Number((((venda - custo) / custo) * 100).toFixed(2));
+    } else if (field === 'margem' && custo > 0) {
+      venda = custo * (1 + Number(next.margem) / 100);
+      next.preco_venda = Number(venda.toFixed(2));
     }
-    if (field === 'margem' && custo > 0) {
-      next.preco_venda = custo * (1 + Number(next.margem) / 100);
-    }
+    
     next.lucro_produto = venda - custo;
     next.valor_estoque = custo * estoque;
     next.lucro_estoque = next.lucro_produto * estoque;
@@ -255,7 +273,6 @@ export default function Produtos() {
         </div>
       </div>
 
-      {/* CABEÇALHO DE INDICADORES */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
           <div className="flex items-center justify-between text-zinc-500">
@@ -269,21 +286,21 @@ export default function Produtos() {
             <span className="text-xs font-bold uppercase">Total Estoque (Custo)</span>
             <DollarSign className="h-4 w-4" />
           </div>
-          <p className="text-2xl font-mono font-bold text-orange-400">R$ {valorTotalEstoqueCusto.toFixed(2)}</p>
+          <p className="text-2xl font-mono font-bold text-orange-400">{formatCurrency(valorTotalEstoqueCusto)}</p>
         </div>
         <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
           <div className="flex items-center justify-between text-zinc-500">
             <span className="text-xs font-bold uppercase">Total Venda (Estoque)</span>
             <TrendingUp className="h-4 w-4" />
           </div>
-          <p className="text-2xl font-mono font-bold text-green-400">R$ {valorTotalVendaPotencial.toFixed(2)}</p>
+          <p className="text-2xl font-mono font-bold text-green-400">{formatCurrency(valorTotalVendaPotencial)}</p>
         </div>
         <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
           <div className="flex items-center justify-between text-zinc-500">
             <span className="text-xs font-bold uppercase">Lucro Total</span>
             <BarChart3 className="h-4 w-4" />
           </div>
-          <p className="text-2xl font-mono font-bold text-blue-400">R$ {lucroTotalProjetado.toFixed(2)}</p>
+          <p className="text-2xl font-mono font-bold text-blue-400">{formatCurrency(lucroTotalProjetado)}</p>
         </div>
       </div>
 
@@ -346,11 +363,11 @@ export default function Produtos() {
                         </div>
                         {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1 rounded uppercase w-fit">Sem Estoque</span>}
                       </td>
-                      <td className="p-3 text-right font-mono text-orange-400/80">R$ {Number(p.custo).toFixed(2)}</td>
+                      <td className="p-3 text-right font-mono text-orange-400/80">{formatCurrency(p.custo)}</td>
                       <td className={`p-3 text-right font-mono font-bold ${isZerado ? 'text-red-500' : ''}`}>{p.estoque_atual} {p.unidade}</td>
-                      <td className="p-3 text-right font-mono text-zinc-300">R$ {vlEstoque.toFixed(2)}</td>
-                      <td className="p-3 text-right font-mono text-green-400">R$ {vlVendaTot.toFixed(2)}</td>
-                      <td className="p-3 text-right font-mono text-blue-400 font-bold">R$ {vlLucroTot.toFixed(2)}</td>
+                      <td className="p-3 text-right font-mono text-zinc-300">{formatCurrency(vlEstoque)}</td>
+                      <td className="p-3 text-right font-mono text-green-400">{formatCurrency(vlVendaTot)}</td>
+                      <td className="p-3 text-right font-mono text-blue-400 font-bold">{formatCurrency(vlLucroTot)}</td>
                       <td className="p-3 text-right">
                         <div className="flex justify-end gap-1">
                           <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400"><Pencil className="h-3.5 w-3.5" /></button>
@@ -386,41 +403,43 @@ export default function Produtos() {
                 <div className="flex gap-2">
                   <input value={form.codigo || ''} onChange={(e) => updateField('codigo', e.target.value)}
                     className="flex-1 h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm font-mono focus:outline-none" />
-                  <button 
-                    type="button"
-                    onClick={() => setScanning(true)}
-                    className="h-10 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center gap-1"
-                    title="Escanear com a câmera"
-                  >
+                  <button type="button" onClick={() => setScanning(true)} className="h-10 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center gap-1" title="Escanear com a câmera">
                     <Camera className="h-4 w-4" />
                   </button>
                   <button onClick={genCode} className="h-10 px-3 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs transition">Gerar</button>
                 </div>
               </div>
 
-              <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
-                <label className="text-xs font-bold text-orange-400 uppercase">Custo (R$)</label>
-                <input type="number" step="0.01" value={form.custo || ''} onChange={(e) => updateField('custo', e.target.value)}
-                  className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-400 font-mono" />
-              </div>
-              <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
-                <label className="text-xs font-bold text-green-400 uppercase">Venda (R$)</label>
-                <input type="number" step="0.01" value={form.preco_venda || ''} onChange={(e) => updateField('preco_venda', e.target.value)}
-                  className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-400 font-mono" />
+              <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
+                  <label className="text-xs font-bold text-orange-400 uppercase">Custo</label>
+                  <input type="text" value={formatCurrency(form.custo || 0)} onChange={(e) => updateField('custo', e.target.value)}
+                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-400 font-mono" />
+                </div>
+                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
+                  <label className="text-xs font-bold text-blue-400 uppercase">Margem (%)</label>
+                  <input type="number" step="0.01" value={form.margem || ''} onChange={(e) => updateField('margem', e.target.value)}
+                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-blue-400 font-mono" />
+                </div>
+                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
+                  <label className="text-xs font-bold text-green-400 uppercase">Venda</label>
+                  <input type="text" value={formatCurrency(form.preco_venda || 0)} onChange={(e) => updateField('preco_venda', e.target.value)}
+                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-400 font-mono" />
+                </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-3 gap-2">
                 <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Lucro/Un</p>
-                  <p className="font-bold text-green-500">R$ {Number(form.lucro_produto).toFixed(2)}</p>
+                  <p className="font-bold text-green-500">{formatCurrency(form.lucro_produto || 0)}</p>
                 </div>
                 <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Valor Est.</p>
-                  <p className="font-bold text-zinc-300">R$ {Number(form.valor_estoque).toFixed(2)}</p>
+                  <p className="font-bold text-zinc-300">{formatCurrency(form.valor_estoque || 0)}</p>
                 </div>
                 <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
                   <p className="text-[10px] text-zinc-500 uppercase">Lucro Est.</p>
-                  <p className="font-bold text-orange-500">R$ {Number(form.lucro_estoque).toFixed(2)}</p>
+                  <p className="font-bold text-orange-500">{formatCurrency(form.lucro_estoque || 0)}</p>
                 </div>
               </div>
 
