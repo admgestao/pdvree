@@ -91,7 +91,6 @@ export default function PDV() {
     scrollbarWidth: 'thin',
     scrollbarColor: '#3f3f46 transparent',
   } as React.CSSProperties;
-
   const fCurrency = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
   useEffect(() => {
@@ -111,10 +110,10 @@ export default function PDV() {
         .gte('criado_em', `${hoje}T00:00:00`)
         .lte('criado_em', `${hoje}T23:59:59`)
         .order('criado_em', { ascending: false });
-
       if (data && data.length > 0) {
-        const ultimoMovimento = data[0];
-        setCaixaAberto(ultimoMovimento.tipo === 'abertura');
+        // Encontra o último movimento que altera o status (abertura ou fechamento)
+        const ultimoStatus = data.find(m => m.tipo === 'abertura' || m.tipo === 'fechamento');
+        setCaixaAberto(ultimoStatus?.tipo === 'abertura');
       } else {
         setCaixaAberto(false);
       }
@@ -217,11 +216,9 @@ export default function PDV() {
     e.preventDefault();
     const query = search.trim();
     if (!query) return;
-
     let { data: prod } = await supabase.from('produtos').select('*').eq('codigo', query).eq('ativo', true).maybeSingle();
     let loteId = undefined;
     let loteCodigo = undefined;
-
     if (!prod) {
       const { data: lote } = await supabase.from('produto_lotes').select('*, produtos(*)').eq('codigo_barras', query).maybeSingle();
       if (lote && lote.produtos) {
@@ -315,7 +312,7 @@ export default function PDV() {
   const totalCustoItens = cart.reduce((sum, item) => sum + (item.preco_custo * item.quantity), 0);
   
   const descontoGeralVal = descontoGeralTipo === 'percent' ?
-    totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
+  totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
   
   const totalDescontoAplicado = descontoDosItens + descontoGeralVal;
   const totalBruto = Math.max(0, totalItensComDescontoIndividual - descontoGeralVal + (Number(custoAdicional) || 0));
@@ -342,7 +339,8 @@ export default function PDV() {
 
   async function finalizeSale() {
     if (cart.length === 0) return;
-    if (!formaPagamentoId) { toast.error('Selecione a forma de pagamento'); return; }
+    if (!formaPagamentoId) { toast.error('Selecione a forma de pagamento');
+      return; }
     if (!vendedorId) { toast.error('Selecione o Vendedor(a) antes de finalizar!'); return; }
 
     setSaving(true);
@@ -366,7 +364,6 @@ export default function PDV() {
         troco, 
         observacao,
       }).select('id').single();
-
       if (vendaErr) throw vendaErr;
 
       const itensParaSalvar = cart.map(item => ({
@@ -534,7 +531,7 @@ export default function PDV() {
                         className="h-7 bg-secondary border border-border rounded text-[10px] px-0.5">
                         <option value="percent">%</option>
                         <option value="fixed">R$</option>
-                    </select>
+                      </select>
                     </div>
                     <div className="flex items-center rounded-lg border border-border bg-secondary">
                       <button type="button" onClick={() => updateQty(item.cartItemId, -1)} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-l-lg"><Minus className="h-3 w-3" /></button>
@@ -546,7 +543,7 @@ export default function PDV() {
                   </div>
                 </div>
               </div>
-             ))
+              ))
           )}
         </div>
       </div>
@@ -676,7 +673,7 @@ export default function PDV() {
                 </span>
               )}
             </div>
-           <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
+            <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => { setCart([]); setCustoAdicional(0); setDescCusto(''); setUsarCredito(false); setObservacao(''); }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
@@ -726,7 +723,7 @@ export default function PDV() {
                   <span className="font-mono text-primary text-lg">{fCurrency(total)}</span>
                 </div>
                </div>
-             </div>
+            </div>
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setShowFinalize(false)} className="h-10 px-4 rounded-lg border border-border text-sm font-medium">Cancelar</button>
               <button onClick={finalizeSale} disabled={saving} className="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20">{saving ? 'Processando...' : 'Confirmar Venda'}</button>
