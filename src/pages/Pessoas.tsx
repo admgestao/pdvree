@@ -63,13 +63,12 @@ export default function Pessoas() {
   });
 
   function openNew() { setEditing(null); setForm({ ...emptyPessoa }); setShowForm(true); }
+  
   function openEdit(p: Pessoa) {
-    if (!isAdmin) { toast.error('Apenas administradores podem editar.'); return; }
     setEditing(p); setForm({ ...p }); setShowForm(true);
   }
 
   async function handleDelete(p: Pessoa) {
-    if (!isAdmin) { toast.error('Apenas administradores podem excluir.'); return; }
     if (!confirm(`Excluir "${p.nome}"?`)) return;
     await supabase.from('pessoas').delete().eq('id', p.id);
     await logAction(user?.name || '', 'excluir_pessoa', p.nome);
@@ -86,7 +85,7 @@ export default function Pessoas() {
       credito: Number(form.credito) || 0, limite_compra: Number(form.limite_compra) || 0,
       limite_usado: Number(form.limite_usado) || 0,
     };
-
+    
     if (editing) {
       const { error } = await supabase.from('pessoas').update(payload).eq('id', editing.id);
       if (error) { toast.error('Erro: ' + error.message); return; }
