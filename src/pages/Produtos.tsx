@@ -536,7 +536,7 @@ export default function Produtos() {
   };
 
   return (
-    <div className="p-4 md:p-6 space-y-4 animate-fade-in text-foreground">
+    <div className="p-4 md:p-6 space-y-4 animate-fade-in text-foreground [color-scheme:dark]">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <h1 className="text-xl md:text-2xl font-bold">Cadastro de Produtos</h1>
         <div className="flex gap-2">
@@ -580,7 +580,7 @@ export default function Produtos() {
         </div>
       </div>
 
-      <div className="flex space-x-2 border-b border-border pb-2 overflow-x-auto">
+      <div className="flex space-x-2 border-b border-border pb-2 overflow-x-auto scrollbar-thin scrollbar-thumb-muted">
         <button onClick={() => setActiveTab('todos')} className={`px-4 py-2 text-sm font-bold uppercase rounded-t-lg transition-colors ${activeTab === 'todos' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
           Todos
         </button>
@@ -606,11 +606,11 @@ export default function Produtos() {
         </div>
 
         <div className="relative">
-          <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <input
             type="date"
             value={filtroValidade} onChange={(e) => setFiltroValidade(e.target.value)}
-            className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
+            className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm [color-scheme:dark]"
           />
         </div>
         
@@ -631,7 +631,7 @@ export default function Produtos() {
         <div className="h-32 bg-card animate-pulse rounded-xl border border-border shadow-sm" />
       ) : (
         <div className="rounded-xl border border-border overflow-hidden bg-card shadow-sm">
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-muted">
             <table className="w-full text-sm text-left border-collapse">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
                 <tr>
@@ -703,7 +703,7 @@ export default function Produtos() {
 
       {showForm && !showLoteForm && !showHistoryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-auto rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-auto scrollbar-thin scrollbar-thumb-muted rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95">
             <div className="flex items-center justify-between border-b border-border pb-4">
               <div className="flex items-center gap-4 flex-wrap">
                 <h2 className="text-lg font-black uppercase text-primary italic tracking-tighter">{editing ? 'Editar Produto' : 'Novo Produto'}</h2>
@@ -745,11 +745,11 @@ export default function Produtos() {
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Entrada</label>
-                  <input type="date" value={form.data_entrada || ''} onChange={(e) => updateField('data_entrada', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
+                  <input type="date" value={form.data_entrada || ''} onChange={(e) => updateField('data_entrada', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark]" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade (Lote Base)</label>
-                  <input type="date" value={form.data_validade || ''} onChange={(e) => updateField('data_validade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
+                  <input type="date" value={form.data_validade || ''} onChange={(e) => updateField('data_validade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark]" />
                 </div>
               </div>
 
@@ -773,14 +773,14 @@ export default function Produtos() {
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Categoria</label>
                   <input list="categorias-list" value={form.categoria || ''} onChange={(e) => updateField('categoria', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
                   <datalist id="categorias-list">
-                    {categoriasExistentes.map(c => <option key={c} value={c} />)}
+                    {categoriasExistentes.map(c => <option key={c} value={c} className="bg-card text-foreground" />)}
                   </datalist>
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
-                  <select value={form.fornecedor || ''} onChange={(e) => updateField('fornecedor', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground">
-                    <option value="">Selecione...</option>
-                    {fornecedores.map(f => <option key={f.nome} value={f.nome}>{f.nome}</option>)}
+                  <select value={form.fornecedor || ''} onChange={(e) => updateField('fornecedor', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none">
+                    <option value="" className="bg-card text-foreground">Selecione...</option>
+                    {fornecedores.map(f => <option key={f.nome} value={f.nome} className="bg-card text-foreground">{f.nome}</option>)}
                   </select>
                 </div>
               </div>
@@ -792,12 +792,12 @@ export default function Produtos() {
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Unidade</label>
-                  <select value={form.unidade || 'Und'} onChange={(e) => updateField('unidade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground">
-                    <option value="Und">Unidade (Und)</option>
-                    <option value="Cx">Caixa (Cx)</option>
-                    <option value="Kg">Quilo (Kg)</option>
-                    <option value="Mt">Metro (Mt)</option>
-                    <option value="Lt">Litro (Lt)</option>
+                  <select value={form.unidade || 'Und'} onChange={(e) => updateField('unidade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none">
+                    <option value="Und" className="bg-card text-foreground">Unidade (Und)</option>
+                    <option value="Cx" className="bg-card text-foreground">Caixa (Cx)</option>
+                    <option value="Kg" className="bg-card text-foreground">Quilo (Kg)</option>
+                    <option value="Mt" className="bg-card text-foreground">Metro (Mt)</option>
+                    <option value="Lt" className="bg-card text-foreground">Litro (Lt)</option>
                   </select>
                 </div>
               </div>
@@ -861,11 +861,11 @@ export default function Produtos() {
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
-                <input type="date" value={loteForm.data_entrada} onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground" />
+                <input type="date" value={loteForm.data_entrada} onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground">Data Validade</label>
-                <input type="date" value={loteForm.data_validade} onChange={(e) => setLoteForm({...loteForm, data_validade: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground" />
+                <input type="date" value={loteForm.data_validade} onChange={(e) => setLoteForm({...loteForm, data_validade: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" />
               </div>
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
@@ -920,10 +920,10 @@ export default function Produtos() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <input value={historicoBusca} onChange={(e) => setHistoricoBusca(e.target.value)} placeholder="Filtrar por código ou observação..." className="w-full h-10 pl-10 pr-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
               </div>
-              <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
+              <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary [color-scheme:dark]" />
             </div>
 
-            <div className="flex-1 overflow-auto p-4">
+            <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
               <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
