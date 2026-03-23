@@ -76,40 +76,38 @@ export function AppSidebar() {
 
   const handleLogoutWithCheck = async () => {
     try {
-      // Usando a mesma lógica de data do PDV para consistência
       const hoje = new Date().toLocaleDateString('en-CA');
-      
+
+      // BUSCA O ÚLTIMO STATUS REAL (ABERTURA OU FECHAMENTO)
       const { data, error } = await supabase
         .from('caixa_movimentos')
         .select('tipo')
+        .in('tipo', ['abertura', 'fechamento']) 
         .gte('criado_em', `${hoje}T00:00:00`)
         .lte('criado_em', `${hoje}T23:59:59`)
-        .order('criado_em', { ascending: false });
+        .order('criado_em', { ascending: false })
+        .limit(1);
 
       if (error) throw error;
 
-      // Lógica robusta: verifica o ÚLTIMO movimento do dia
       const ultimoMovimento = data && data.length > 0 ? data[0].tipo : null;
 
+      // Se o último registro de status for 'abertura', impede o logout direto
       if (ultimoMovimento === 'abertura') {
         const confirmar = window.confirm(
           "ATENÇÃO: O caixa ainda está aberto!\n\nVocê deve realizar o fechamento antes de sair.\n\nDeseja ir para a tela de Caixa agora?"
         );
-
         if (confirmar) {
           navigate('/financeiro/caixa');
           return;
         }
-        // Se o usuário clicar em "Cancelar" no confirm, ele NÃO desloga.
         return; 
       }
 
-      // Se o último movimento for 'fechamento' ou não houver movimentos (caixa nem abriu)
       await logout();
       navigate('/login');
     } catch (error) {
       console.error("Erro ao verificar caixa:", error);
-      // Em caso de erro crítico de rede, permitimos o logout para não prender o usuário
       await logout();
       navigate('/login');
     }
@@ -140,12 +138,12 @@ export function AppSidebar() {
 
       <SidebarContent className="scrollbar-thin scrollbar-thumb-zinc-800">
         {menuGroups.map((group) => (
-          <Collapsible key={group.label} defaultOpen>
+          <Collapsible key={group.label} defaultOpen className="group/collapsible">
             <SidebarGroup>
               <SidebarGroupLabel asChild>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground">
                   {!collapsed && group.label}
-                  {!collapsed && <ChevronDown className="h-3 w-3" />}
+                  {!collapsed && <ChevronDown className="h-3 w-3 transition-transform group-data-[state=open]/collapsible:rotate-180" />}
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
