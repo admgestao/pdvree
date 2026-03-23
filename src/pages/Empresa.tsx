@@ -81,8 +81,9 @@ export default function Empresa() {
   }
 
   async function handleSave() {
-    if (!form.razao_social || !form.cnpj) {
-      toast.error('CNPJ e Razão Social são obrigatórios');
+    // Agora apenas Razão Social é obrigatória
+    if (!form.razao_social) {
+      toast.error('Razão Social é obrigatória');
       return;
     }
     setSaving(true);
@@ -118,8 +119,9 @@ export default function Empresa() {
         <Card className="md:col-span-2">
           <CardHeader><CardTitle>Identificação</CardTitle></CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2">
+          
             <div className="space-y-2">
-              <Label>CNPJ</Label>
+              <Label>CNPJ (Opcional)</Label>
               <Input value={form.cnpj} onChange={e => set('cnpj', e.target.value)} />
             </div>
             <div className="space-y-2">

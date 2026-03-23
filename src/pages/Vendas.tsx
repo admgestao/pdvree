@@ -52,6 +52,7 @@ export default function Vendas() {
   const [endDate, setEndDate] = useState('');
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null);
   const [itensDetalhe, setItensDetalhe] = useState<VendaItem[]>([]);
+  const [dadosEmpresa, setDadosEmpresa] = useState<any>(null);
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
@@ -69,6 +70,10 @@ export default function Vendas() {
   async function load() {
     setLoading(true);
     try {
+      // Busca dados da empresa para o cabeçalho das impressões
+      const { data: emp } = await supabase.from('empresa').select('*').limit(1).single();
+      setDadosEmpresa(emp);
+
       let queryVendas = supabase.from('vendas').select('*').order('criado_em', { ascending: false });
       if (startDate) queryVendas = queryVendas.gte('criado_em', startDate);
       if (endDate) queryVendas = queryVendas.lte('criado_em', endDate + 'T23:59:59');
@@ -177,11 +182,22 @@ export default function Vendas() {
   function imprimirVenda(venda: Venda, itens: VendaItem[]) {
     const win = window.open('', '_blank');
     if (!win) return;
+
+    const cabecalhoEmpresa = dadosEmpresa ? `
+      <div style="text-align: center; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">
+        <h1 style="margin: 0; font-size: 18px;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h1>
+        <p style="margin: 2px 0; font-size: 12px;">${dadosEmpresa.endereco}, ${dadosEmpresa.numero} - ${dadosEmpresa.bairro}</p>
+        <p style="margin: 2px 0; font-size: 12px;">${dadosEmpresa.cidade} - ${dadosEmpresa.contato}</p>
+        ${dadosEmpresa.cnpj ? `<p style="margin: 2px 0; font-size: 12px;">CNPJ: ${dadosEmpresa.cnpj}</p>` : ''}
+      </div>
+    ` : '';
+
     win.document.write(`
       <html>
         <head><title>Venda</title><style>body { font-family: sans-serif; padding:20px } .linha { display:flex; justify-content:space-between; margin-bottom:5px } .obs { font-size: 12px; margin-top: 10px; border-top: 1px solid #ccc; padding-top: 5px; }</style></head>
         <body>
-          <h2>Comprovante</h2>
+          ${cabecalhoEmpresa}
+          <h2 style="text-align: center;">Comprovante de Venda</h2>
           <p><b>Data:</b> ${formatDate(venda.criado_em)}</p>
           <p><b>Vendedor:</b> ${venda.vendedor_nome || '-'}</p>
           <p><b>Cliente:</b> ${venda.cliente_nome}</p>
@@ -191,7 +207,7 @@ export default function Vendas() {
           ${venda.desconto > 0 ? `<div class="linha"><span>Desconto:</span><span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
           ${venda.custo_adicional > 0 ? `<div class="linha"><span>${venda.desc_custo_adicional || 'Adicional'}:</span><span>+ ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
           <hr/>
-          <h3>Total: ${formatCurrency(venda.total)}</h3>
+          <h3 style="text-align: right;">Total: ${formatCurrency(venda.total)}</h3>
           ${venda.observacao ? `<div class="obs"><b>Obs:</b> ${venda.observacao}</div>` : ''}
         </body>
       </html>
@@ -211,6 +227,13 @@ export default function Vendas() {
     const corCustoAdd = venda.custo_no_lucro ? '#059669' : '#dc2626';
     const sinalCustoAdd = venda.custo_no_lucro ? '+' : '-';
 
+    const cabecalhoEmpresa = dadosEmpresa ? `
+      <div style="border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 15px;">
+        <h1 style="margin: 0; font-size: 20px;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h1>
+        <p style="margin: 2px 0; font-size: 12px; color: #666;">${dadosEmpresa.cnpj ? `CNPJ: ${dadosEmpresa.cnpj} | ` : ''}Contato: ${dadosEmpresa.contato}</p>
+      </div>
+    ` : '';
+
     win.document.write(`
       <html>
         <head>
@@ -228,6 +251,7 @@ export default function Vendas() {
           </style>
         </head>
         <body>
+          ${cabecalhoEmpresa}
           <h2>Comprovante Administrativo (Interno)</h2>
           <div class="header-info">
             <p><b>Data:</b> ${formatDate(venda.criado_em)}</p>
@@ -316,6 +340,19 @@ export default function Vendas() {
     const titulo = isVendas ? 'Relatório de Vendas' : 'Relatório de Produtos Vendidos';
     const lista = isVendas ? filteredVendas : filteredItens;
 
+    const cabecalhoEmpresa = dadosEmpresa ? `
+      <div style="display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px;">
+        <div>
+          <h1 style="margin: 0; font-size: 22px;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h1>
+          <p style="margin: 2px 0; font-size: 12px;">${dadosEmpresa.endereco}, ${dadosEmpresa.numero} - ${dadosEmpresa.cidade}</p>
+        </div>
+        <div style="text-align: right; font-size: 12px;">
+          <p style="margin: 2px 0;">${dadosEmpresa.cnpj ? `CNPJ: ${dadosEmpresa.cnpj}` : ''}</p>
+          <p style="margin: 2px 0;">Contato: ${dadosEmpresa.contato}</p>
+        </div>
+      </div>
+    ` : '';
+
     let conteudoTabela = '';
     if (isVendas) {
       conteudoTabela = `
@@ -368,6 +405,7 @@ export default function Vendas() {
           <style>body { font-family: sans-serif; padding: 30px; color: #333; }</style>
         </head>
         <body>
+          ${cabecalhoEmpresa}
           <h2>${titulo}</h2>
           <p><b>Período:</b> ${startDate ? formatDate(startDate + 'T00:00:00') : 'Todo o período'} até ${endDate ? formatDate(endDate + 'T00:00:00') : 'Hoje'}</p>
           ${search ? `<p><b>Filtro aplicado:</b> "${search}"</p>` : ''}
