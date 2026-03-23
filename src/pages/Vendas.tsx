@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, X, Eye, Printer, List, Package } from 'lucide-react';
+import { Search, X, Eye, Printer, List, Package, Briefcase, TrendingUp, DollarSign, PieChart } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { ValueDisplay } from '@/components/ValueDisplay';
 import { useVisibility } from '@/contexts/VisibilityContext';
@@ -12,7 +12,10 @@ interface Venda {
   desconto: number;
   custo_adicional: number;
   desc_custo_adicional?: string;
+  custo_no_lucro?: boolean;
   total: number;
+  total_custo?: number;
+  lucro_liquido?: number;
   forma_pagamento_id: string;
   troco: number;
   observacao: string;
@@ -25,25 +28,28 @@ interface Venda {
 interface VendaItem {
   id: string;
   venda_id: string;
+  produto_id?: string;
   produto_nome: string;
   quantidade: number;
   preco: number;
   total: number;
   criado_em?: string;
   vendedor_nome?: string;
+  produtos?: {
+    preco_custo: number; 
+  };
 }
 
 export default function Vendas() {
   const { toggleGlobal } = useVisibility();
 
-  const [activeTab, setActiveTab] = useState<'vendas' | 'itens'>('vendas');
+  const [activeTab, setActiveTab] = useState<'vendas' | 'itens' | 'admin'>('vendas');
   const [vendas, setVendas] = useState<Venda[]>([]);
   const [todosItens, setTodosItens] = useState<VendaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null);
   const [itensDetalhe, setItensDetalhe] = useState<VendaItem[]>([]);
 
@@ -68,37 +74,92 @@ export default function Vendas() {
       if (endDate) queryVendas = queryVendas.lte('criado_em', endDate + 'T23:59:59');
       const { data: vendasData } = await queryVendas;
 
-      const [resClientes, resFormas] = await Promise.all([
+      if (!vendasData || vendasData.length === 0) {
+        setVendas([]);
+        setTodosItens([]);
+        setLoading(false);
+        return;
+      }
+
+      const idsVendas = vendasData.map((v: any) => v.id);
+      // Busca tudo em paralelo para otimizar
+      const [resClientes, resFormas, resItens] = await Promise.all([
         supabase.from('pessoas').select('id, nome'),
         supabase.from('formas_pagamento').select('id, nome'),
+        supabase.from('vendas_itens').select('*').in('venda_id', idsVendas)
       ]);
 
-      const mappedVendas = (vendasData || []).map((v: any) => ({
-        ...v,
-        cliente_nome: resClientes.data?.find(c => c.id === v.cliente_id)?.nome || 'Consumidor final',
-        forma_nome: resFormas.data?.find(f => f.id === v.forma_pagamento_id)?.nome || 'Não informado',
-      }));
-      setVendas(mappedVendas);
+      const itensData = resItens.data || [];
+      const produtoIds = [...new Set(itensData.map(i => i.produto_id).filter(Boolean))];
 
-      if (mappedVendas.length > 0) {
-        const idsVendas = mappedVendas.map(v => v.id);
-        const { data: itensData } = await supabase
-          .from('vendas_itens')
-          .select('*')
-          .in('venda_id', idsVendas);
+      let produtosData: any[] = [];
+      let lotesData: any[] = [];
 
-        const mappedItens = (itensData || []).map(item => {
-          const vendaPai = mappedVendas.find(v => v.id === item.venda_id);
-          return { 
-            ...item, 
-            criado_em: vendaPai?.criado_em,
-            vendedor_nome: vendaPai?.vendedor_nome 
-          };
-        });
-        setTodosItens(mappedItens);
-      } else {
-        setTodosItens([]);
+      // Busca os custos reais nos dois bancos de dados de produtos
+      if (produtoIds.length > 0) {
+        const [resProdutos, resLotes] = await Promise.all([
+          supabase.from('produtos').select('id, custo').in('id', produtoIds),
+          supabase.from('produto_lotes').select('produto_id, codigo_barras, custo').in('produto_id', produtoIds)
+        ]);
+        produtosData = resProdutos.data || [];
+        lotesData = resLotes.data || [];
       }
+
+      // 1. Mapeia e calcula o custo dinâmico para CADA item vendido
+      const mappedItens = itensData.map(item => {
+        let custoUn = 0;
+        
+        // Verifica se é lote pela regex
+        const loteMatch = item.produto_nome?.match(/\(Lote:\s*(.*?)\)/);
+        
+        if (loteMatch && loteMatch[1]) {
+          const codigoLote = loteMatch[1].trim();
+          const lote = lotesData.find(l => l.produto_id === item.produto_id && l.codigo_barras === codigoLote);
+          
+          if (lote && lote.custo !== undefined && lote.custo !== null) {
+            custoUn = Number(lote.custo);
+          } else {
+            // Fallback para o custo do produto
+            const prod = produtosData.find(p => p.id === item.produto_id);
+            custoUn = prod && prod.custo !== undefined ? Number(prod.custo) : 0;
+          }
+        } else {
+          // Se não for lote, pega do produto normal
+          const prod = produtosData.find(p => p.id === item.produto_id);
+          custoUn = prod && prod.custo !== undefined ? Number(prod.custo) : 0;
+        }
+
+        const vendaPai = vendasData.find((v: any) => v.id === item.venda_id);
+        return { 
+          ...item, 
+          criado_em: vendaPai?.criado_em,
+          vendedor_nome: vendaPai?.vendedor_nome,
+          produtos: { preco_custo: custoUn } // Armazena o custo calculado na mesma estrutura
+        };
+      });
+
+      // 2. Mapeia as vendas aplicando a soma dos custos calculados
+      const mappedVendas = vendasData.map((v: any) => {
+        const itensDestaVenda = mappedItens.filter(i => i.venda_id === v.id);
+        
+        // Soma o custo (Custo unitário real * Quantidade vendida)
+        const totalCustoCalculado = itensDestaVenda.reduce((acc, curr) => acc + (curr.produtos.preco_custo * curr.quantidade), 0);
+        
+        // Recalcula o lucro líquido baseando-se no custo dinâmico e na marcação de custo no lucro
+        const valorCustoAdicional = Number(v.custo_adicional) || 0;
+        const lucroCalculado = Number(v.total) - totalCustoCalculado - (v.custo_no_lucro ? 0 : valorCustoAdicional);
+
+        return {
+          ...v,
+          cliente_nome: resClientes.data?.find(c => c.id === v.cliente_id)?.nome || 'Consumidor final',
+          forma_nome: resFormas.data?.find(f => f.id === v.forma_pagamento_id)?.nome || 'Não informado',
+          total_custo: totalCustoCalculado,
+          lucro_liquido: lucroCalculado
+        };
+      });
+
+      setVendas(mappedVendas);
+      setTodosItens(mappedItens);
     } catch (err) {
       console.error(err);
     } finally {
@@ -106,10 +167,11 @@ export default function Vendas() {
     }
   }
 
+  // Como já calculamos tudo na função load(), abrir o detalhe fica instantâneo!
   async function openDetail(v: Venda) {
     setSelectedVenda(v);
-    const { data } = await supabase.from('vendas_itens').select('*').eq('venda_id', v.id);
-    setItensDetalhe(data || []);
+    const itens = todosItens.filter(i => i.venda_id === v.id);
+    setItensDetalhe(itens);
   }
 
   function imprimirVenda(venda: Venda, itens: VendaItem[]) {
@@ -138,6 +200,90 @@ export default function Vendas() {
     win.print();
   }
 
+  function imprimirVendaAdmin(venda: Venda, itens: VendaItem[]) {
+    const win = window.open('', '_blank');
+    if (!win) return;
+    
+    const lucroLiquido = Number(venda.lucro_liquido) || 0;
+    const totalCusto = Number(venda.total_custo) || 0;
+    const margemGeral = venda.total > 0 ? ((lucroLiquido / venda.total) * 100).toFixed(2) : '0.00';
+    
+    const corCustoAdd = venda.custo_no_lucro ? '#059669' : '#dc2626';
+    const sinalCustoAdd = venda.custo_no_lucro ? '+' : '-';
+
+    win.document.write(`
+      <html>
+        <head>
+          <title>Comprovante Administrativo - Venda</title>
+          <style>
+            body { font-family: sans-serif; padding:20px; color: #333; } 
+            table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 12px; }
+            th, td { border-bottom: 1px solid #ccc; padding: 6px 0; text-align: right; }
+            th { text-align: right; background: #f9f9f9; }
+            td:first-child, th:first-child { text-align: left; }
+            .header-info { margin-bottom: 20px; font-size: 14px; }
+            .resumo { margin-top: 20px; width: 100%; max-width: 400px; margin-left: auto; font-size: 14px; }
+            .resumo div { display: flex; justify-content: space-between; margin-bottom: 5px; }
+            .destaque { font-weight: bold; font-size: 16px; border-top: 2px solid #333; padding-top: 5px; }
+          </style>
+        </head>
+        <body>
+          <h2>Comprovante Administrativo (Interno)</h2>
+          <div class="header-info">
+            <p><b>Data:</b> ${formatDate(venda.criado_em)}</p>
+            <p><b>Vendedor:</b> ${venda.vendedor_nome || '-'}</p>
+            <p><b>Cliente:</b> ${venda.cliente_nome}</p>
+            <p><b>Pagamento:</b> ${venda.forma_nome}</p>
+          </div>
+          
+          <table>
+            <thead>
+              <tr>
+                <th>Produto</th>
+                <th>Qtd</th>
+                <th>Venda Un.</th>
+                <th>Custo Un.*</th>
+                <th>Subtotal</th>
+                <th>Lucro Item</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itens.map(i => {
+                const custoUn = i.produtos?.preco_custo || 0;
+                const vendaUn = i.quantidade > 0 ? i.total / i.quantidade : 0;
+                const lucroItem = i.total - (custoUn * i.quantidade);
+                return `
+                  <tr>
+                    <td>${i.produto_nome}</td>
+                    <td style="text-align: center;">${i.quantidade}</td>
+                    <td>${formatCurrency(vendaUn)}</td>
+                    <td style="color: #d97706;">${formatCurrency(custoUn)}</td>
+                    <td style="font-weight: bold;">${formatCurrency(i.total)}</td>
+                    <td style="color: #059669; font-weight: bold;">${formatCurrency(lucroItem)}</td>
+                  </tr>
+                `
+              }).join('')}
+            </tbody>
+          </table>
+          <p style="font-size: 10px; color: #666;">* O custo unitário reflete o custo base atual do produto/lote cadastrado no sistema.</p>
+
+          <div class="resumo">
+            <div><span>Subtotal (Bruto):</span> <span>${formatCurrency(venda.subtotal)}</span></div>
+            ${venda.desconto > 0 ? `<div style="color: #dc2626;"><span>Descontos:</span> <span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
+            <div><span>Total Pago pelo Cliente:</span> <span>${formatCurrency(venda.total)}</span></div>
+            <br/>
+            <div style="color: #d97706;"><span>Custo Total do Estoque:</span> <span>- ${formatCurrency(totalCusto)}</span></div>
+            ${venda.custo_adicional > 0 ? `<div style="color: ${corCustoAdd};"><span>Custos Adicionais (${venda.desc_custo_adicional || 'Geral'}):</span> <span>${sinalCustoAdd} ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
+            <div class="destaque" style="color: #059669;"><span>Lucro Líquido:</span> <span>${formatCurrency(lucroLiquido)}</span></div>
+            <div><span>Margem de Ganho:</span> <span>${margemGeral}%</span></div>
+          </div>
+        </body>
+      </html>
+    `);
+    win.document.close();
+    win.print();
+  }
+
   const searchLower = search.toLowerCase();
 
   const filteredVendas = vendas.filter((v) =>
@@ -146,27 +292,31 @@ export default function Vendas() {
     v.vendedor_nome?.toLowerCase().includes(searchLower) ||
     v.id.toLowerCase().includes(searchLower)
   );
-
   const filteredItens = todosItens.filter((i) => 
     i.produto_nome?.toLowerCase().includes(searchLower) ||
     i.vendedor_nome?.toLowerCase().includes(searchLower) ||
     i.venda_id.toLowerCase().includes(searchLower)
   );
+  const totalGeral = activeTab === 'itens' 
+    ? filteredItens.reduce((s, i) => s + (Number(i.total) || 0), 0)
+    : filteredVendas.reduce((s, v) => s + (Number(v.total) || 0), 0);
 
-  const totalGeral = activeTab === 'vendas' 
-    ? filteredVendas.reduce((s, v) => s + (Number(v.total) || 0), 0)
-    : filteredItens.reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const adminTotalReceita = filteredVendas.reduce((s, v) => s + (Number(v.total) || 0), 0);
+  const adminTotalCusto = filteredVendas.reduce((s, v) => s + (Number(v.total_custo) || 0), 0);
+  const adminTotalLucro = filteredVendas.reduce((s, v) => s + (Number(v.lucro_liquido) || 0), 0);
+  // Soma apenas os custos que abatem do lucro para o indicador do topo
+  const adminCustosAdd = filteredVendas.reduce((s, v) => s + (v.custo_no_lucro ? 0 : (Number(v.custo_adicional) || 0)), 0);
+  const adminMargemOperacional = adminTotalReceita > 0 ? (adminTotalLucro / adminTotalReceita) * 100 : 0;
 
   function imprimirRelatorioGeral() {
     const win = window.open('', '_blank');
     if (!win) return;
 
-    const isVendas = activeTab === 'vendas';
+    const isVendas = activeTab === 'vendas' || activeTab === 'admin';
     const titulo = isVendas ? 'Relatório de Vendas' : 'Relatório de Produtos Vendidos';
     const lista = isVendas ? filteredVendas : filteredItens;
 
     let conteudoTabela = '';
-
     if (isVendas) {
       conteudoTabela = `
         <table style="width:100%; text-align:left; border-collapse: collapse; margin-top: 15px;">
@@ -232,33 +382,79 @@ export default function Vendas() {
     win.print();
   }
 
+  const isAdminTab = activeTab === 'admin';
+
   return (
     <div className="p-4 md:p-6 space-y-4 animate-fade-in">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Histórico</h1>
-          <div className="flex bg-secondary p-1 rounded-lg mt-2 w-fit">
+          <div className="flex bg-secondary p-1 rounded-lg mt-2 w-fit overflow-x-auto">
             <button 
               onClick={() => setActiveTab('vendas')}
-              className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'vendas' ? 'bg-primary text-primary-foreground shadow-md' : 'hover:bg-accent'}`}
+              className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap ${activeTab === 'vendas' ? 'bg-primary text-primary-foreground shadow-md' : 'hover:bg-accent'}`}
             >
               VENDAS
             </button>
             <button 
               onClick={() => setActiveTab('itens')}
-              className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all ${activeTab === 'itens' ? 'bg-primary text-primary-foreground shadow-md' : 'hover:bg-accent'}`}
+              className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap ${activeTab === 'itens' ? 'bg-primary text-primary-foreground shadow-md' : 'hover:bg-accent'}`}
             >
               PRODUTOS VENDIDOS
+            </button>
+            <button 
+              onClick={() => setActiveTab('admin')}
+              className={`px-4 py-1.5 rounded-md text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1 ${activeTab === 'admin' ? 'bg-blue-600 text-white shadow-md' : 'hover:bg-accent'}`}
+            >
+              <Briefcase size={14}/> ADMINISTRATIVO
             </button>
           </div>
         </div>
 
-        <ValueDisplay
-          id="total-geral-hist"
-          value={formatCurrency(totalGeral)}
-          className="font-bold text-2xl text-primary"
-        />
+        {activeTab !== 'admin' && (
+          <ValueDisplay
+            id="total-geral-hist"
+            value={formatCurrency(totalGeral)}
+            className="font-bold text-2xl text-primary"
+          />
+        )}
       </div>
+
+      {activeTab === 'admin' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-in slide-in-from-top-4">
+          <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-bold uppercase">Total Receita</span>
+              <DollarSign className="h-4 w-4" />
+            </div>
+            <p className="text-2xl font-mono font-bold text-primary">{formatCurrency(adminTotalReceita)}</p>
+          </div>
+          <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-bold uppercase">Custo de Estoque</span>
+              <Package className="h-4 w-4" />
+            </div>
+            <p className="text-2xl font-mono font-bold text-orange-400">{formatCurrency(adminTotalCusto)}</p>
+          </div>
+          <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-bold uppercase">Lucro Líquido</span>
+              <TrendingUp className="h-4 w-4" />
+            </div>
+            <div className="flex items-end justify-between">
+               <p className="text-2xl font-mono font-bold text-green-500">{formatCurrency(adminTotalLucro)}</p>
+              {adminCustosAdd > 0 && <span className="text-[10px] text-muted-foreground mb-1">(-${formatCurrency(adminCustosAdd)} extras)</span>}
+            </div>
+          </div>
+          <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-bold uppercase">Margem Operacional</span>
+              <PieChart className="h-4 w-4" />
+            </div>
+            <p className="text-2xl font-mono font-bold text-blue-400">{adminMargemOperacional.toFixed(2)}%</p>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2 items-center">
         <div className="relative flex-1 min-w-[200px]">
@@ -284,106 +480,168 @@ export default function Vendas() {
       </div>
 
       <div className="rounded-xl border border-border overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-secondary/50 border-b border-border">
-              <th className="p-3 text-left">Data</th>
-              {activeTab === 'vendas' ? (
-                <>
-                  <th className="p-3 text-left">Vendedor(a)</th>
-                  <th className="p-3 text-left">Cliente</th>
-                  <th className="p-3 text-left hidden md:table-cell">Pagamento</th>
-                  <th className="p-3 text-right">Total</th>
-                </>
-              ) : (
-                <>
-                  <th className="p-3 text-left">Produto</th>
-                  <th className="p-3 text-left">Vendedor(a)</th>
-                  <th className="p-3 text-center">Qtd</th>
-                  <th className="p-3 text-right">Unitário</th>
-                  <th className="p-3 text-right">Subtotal</th>
-                </>
-              )}
-              <th className="p-3 text-right">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={7} className="p-10 text-center animate-pulse">Carregando dados...</td></tr>
-            ) : (activeTab === 'vendas' ? filteredVendas : filteredItens).map((item: any) => (
-              <tr 
-                key={item.id} 
-                onClick={() => activeTab === 'vendas' && openDetail(item)}
-                className="border-b border-border hover:bg-accent/30 cursor-pointer"
-              >
-                <td className="p-3 text-[12px] font-medium opacity-90">
-                  {formatDate(item.criado_em)}
-                </td>
-
-                {activeTab === 'vendas' ? (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-secondary/50 border-b border-border">
+                <th className="p-3 text-left whitespace-nowrap">Data</th>
+                
+                {activeTab === 'vendas' && (
                   <>
-                    <td className="p-3 font-medium text-muted-foreground">{item.vendedor_nome || '-'}</td>
-                    <td className="p-3 font-medium">{item.cliente_nome}</td>
-                    <td className="p-3 hidden md:table-cell">{item.forma_nome}</td>
-                    <td className="p-3 text-right font-bold text-primary">{formatCurrency(item.total)}</td>
-                  </>
-                ) : (
-                  <>
-                    <td className="p-3 font-medium">{item.produto_nome}</td>
-                    <td className="p-3 text-muted-foreground">{item.vendedor_nome || '-'}</td>
-                    <td className="p-3 text-center">{item.quantidade}</td>
-                    <td className="p-3 text-right">{formatCurrency(item.preco)}</td>
-                    <td className="p-3 text-right font-bold">{formatCurrency(item.total)}</td>
+                    <th className="p-3 text-left whitespace-nowrap">Vendedor(a)</th>
+                    <th className="p-3 text-left">Cliente</th>
+                    <th className="p-3 text-left hidden md:table-cell">Pagamento</th>
+                    <th className="p-3 text-right">Total</th>
                   </>
                 )}
 
-                <td className="p-3 text-right">
-                  <div className="flex justify-end gap-1">
-                    {activeTab === 'vendas' ? (
-                      <>
-                        <button onClick={(e) => { e.stopPropagation(); openDetail(item); }} className="p-1.5 rounded hover:bg-accent"><Eye size={16}/></button>
-                        <button onClick={(e) => { e.stopPropagation(); imprimirVenda(item, todosItens.filter(i => i.venda_id === item.id)); }} className="p-1.5 rounded hover:bg-accent"><Printer size={16}/></button>
-                      </>
-                    ) : (
-                      <button onClick={(e) => {
-                        e.stopPropagation();
-                        const v = vendas.find(vend => vend.id === item.venda_id);
-                        if(v) openDetail(v);
-                      }} className="p-1.5 rounded hover:bg-accent"><List size={16}/></button>
-                    )}
-                  </div>
-                </td>
+                {activeTab === 'admin' && (
+                  <>
+                    <th className="p-3 text-left whitespace-nowrap">Vendedor(a)</th>
+                    <th className="p-3 text-right">Valor Bruto</th>
+                    <th className="p-3 text-right">Custo Estoque</th>
+                    <th className="p-3 text-right">Custos Add.</th>
+                    <th className="p-3 text-right">Lucro Líquido</th>
+                    <th className="p-3 text-center">Margem</th>
+                  </>
+                )}
+                
+                {activeTab === 'itens' && (
+                  <>
+                    <th className="p-3 text-left min-w-[200px]">Produto</th>
+                    <th className="p-3 text-left whitespace-nowrap">Vendedor(a)</th>
+                    <th className="p-3 text-center">Qtd</th>
+                    <th className="p-3 text-right">Unitário</th>
+                    <th className="p-3 text-right">Subtotal</th>
+                  </>
+                )}
+                <th className="p-3 text-right">Ações</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8} className="p-10 text-center animate-pulse">Carregando dados...</td></tr>
+              ) : (activeTab === 'itens' ? filteredItens : filteredVendas).map((item: any) => {
+                const itemTotalCusto = Number(item.total_custo) || 0;
+                const itemLucroLiquido = Number(item.lucro_liquido) || 0;
+
+                return (
+                  <tr 
+                    key={item.id} 
+                    onClick={() => (activeTab === 'vendas' || activeTab === 'admin') && openDetail(item)}
+                    className="border-b border-border hover:bg-accent/30 cursor-pointer transition-colors"
+                  >
+                    <td className="p-3 text-[12px] font-medium opacity-90 whitespace-nowrap">
+                      {formatDate(item.criado_em)}
+                    </td>
+
+                    {activeTab === 'vendas' && (
+                      <>
+                        <td className="p-3 font-medium text-muted-foreground">{item.vendedor_nome || '-'}</td>
+                        <td className="p-3 font-medium">{item.cliente_nome}</td>
+                        <td className="p-3 hidden md:table-cell">{item.forma_nome}</td>
+                        <td className="p-3 text-right font-bold text-primary">{formatCurrency(item.total)}</td>
+                      </>
+                    )}
+
+                    {activeTab === 'admin' && (
+                      <>
+                        <td className="p-3 font-medium text-muted-foreground">{item.vendedor_nome || '-'}</td>
+                        <td className="p-3 text-right font-mono">{formatCurrency(item.total)}</td>
+                        <td className="p-3 text-right font-mono text-orange-400">{formatCurrency(itemTotalCusto)}</td>
+                        <td className={`p-3 text-right font-mono ${item.custo_no_lucro && item.custo_adicional > 0 ? 'text-green-500' : 'text-red-400'}`}>
+                          {item.custo_no_lucro && item.custo_adicional > 0 ? '+' : ''}{formatCurrency(item.custo_adicional)}
+                        </td>
+                        <td className="p-3 text-right font-bold font-mono text-green-500">{formatCurrency(itemLucroLiquido)}</td>
+                        <td className="p-3 text-center font-bold">
+                          {item.total > 0 ? ((itemLucroLiquido / item.total) * 100).toFixed(1) : '0.0'}%
+                        </td>
+                      </>
+                    )}
+
+                    {activeTab === 'itens' && (
+                      <>
+                        <td className="p-3 font-medium">{item.produto_nome}</td>
+                        <td className="p-3 text-muted-foreground">{item.vendedor_nome || '-'}</td>
+                        <td className="p-3 text-center">{item.quantidade}</td>
+                        <td className="p-3 text-right">{formatCurrency(item.preco)}</td>
+                        <td className="p-3 text-right font-bold">{formatCurrency(item.total)}</td>
+                      </>
+                    )}
+
+                    <td className="p-3 text-right">
+                      <div className="flex justify-end gap-1">
+                        {activeTab === 'vendas' || activeTab === 'admin' ? (
+                          <>
+                            <button onClick={(e) => { e.stopPropagation(); openDetail(item); }} className="p-1.5 rounded hover:bg-accent"><Eye size={16}/></button>
+                            <button onClick={(e) => { 
+                              e.stopPropagation(); 
+                              activeTab === 'admin' ? imprimirVendaAdmin(item, todosItens.filter(i => i.venda_id === item.id)) : imprimirVenda(item, todosItens.filter(i => i.venda_id === item.id)); 
+                            }} className="p-1.5 rounded hover:bg-accent"><Printer size={16}/></button>
+                          </>
+                        ) : (
+                          <button onClick={(e) => {
+                            e.stopPropagation();
+                            const v = vendas.find(vend => vend.id === item.venda_id);
+                            if(v) openDetail(v);
+                          }} className="p-1.5 rounded hover:bg-accent"><List size={16}/></button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {selectedVenda && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50 p-4">
-          <div className="bg-card border border-border p-6 rounded-2xl w-full max-w-lg shadow-2xl space-y-4">
+          <div className={`bg-card border border-border p-6 rounded-2xl w-full shadow-2xl space-y-4 ${isAdminTab ? 'max-w-2xl' : 'max-w-lg'}`}>
             <div className="flex justify-between items-center">
-              <h2 className="font-bold text-lg flex items-center gap-2"><Package size={20} className="text-primary"/> Detalhes</h2>
+              <h2 className="font-bold text-lg flex items-center gap-2">
+                {isAdminTab ? <Briefcase size={20} className="text-blue-500"/> : <Package size={20} className="text-primary"/>} 
+                {isAdminTab ? 'Detalhes Administrativos' : 'Detalhes'}
+              </h2>
               <button onClick={() => setSelectedVenda(null)} className="p-1 hover:bg-accent rounded-full"><X /></button>
             </div>
 
-            <div className="space-y-1 text-sm border-l-2 border-primary pl-3">
+            <div className={`space-y-1 text-sm border-l-2 pl-3 ${isAdminTab ? 'border-blue-500' : 'border-primary'}`}>
               <p><b>Data:</b> {formatDate(selectedVenda.criado_em)}</p>
               <p><b>Vendedor:</b> {selectedVenda.vendedor_nome || '-'}</p>
               <p><b>Cliente:</b> {selectedVenda.cliente_nome}</p>
               <p><b>Pagamento:</b> {selectedVenda.forma_nome}</p>
             </div>
 
-            <div className="max-h-[200px] overflow-y-auto space-y-2 py-2">
-              {itensDetalhe.map(i => (
-                <div key={i.id} className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
-                  <span>{i.produto_nome} <b className="text-primary">x{i.quantidade}</b></span>
-                  <span className="font-mono">{formatCurrency(i.total)}</span>
-                </div>
-              ))}
+            <div className="max-h-[250px] overflow-y-auto space-y-2 py-2 pr-2">
+              {itensDetalhe.map(i => {
+                const custoUnitario = i.produtos?.preco_custo || 0;
+                const lucroItem = i.total - (custoUnitario * i.quantidade);
+
+                return (
+                  <div key={i.id} className="flex justify-between items-center text-sm border-b border-border/50 pb-2">
+                    <div className="flex flex-col">
+                      <span>{i.produto_nome} <b className={isAdminTab ? 'text-blue-500' : 'text-primary'}>x{i.quantidade}</b></span>
+                      {isAdminTab && (
+                        <span className="text-[10px] text-muted-foreground mt-0.5">
+                          Custo Un: <span className="text-orange-400">{formatCurrency(custoUnitario)}</span> | Venda Un: {formatCurrency(i.quantidade > 0 ? i.total / i.quantidade : 0)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col text-right">
+                      <span className="font-mono font-bold">{formatCurrency(i.total)}</span>
+                      {isAdminTab && (
+                        <span className="text-[10px] text-green-500 font-bold mt-0.5">
+                          Lucro: {formatCurrency(lucroItem)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
 
-            {/* Composição do Valor Final */}
             <div className="space-y-1.5 border-t border-border/50 pt-2 text-sm">
               <div className="flex justify-between text-muted-foreground">
                 <span>Subtotal Itens:</span>
@@ -396,29 +654,49 @@ export default function Vendas() {
                 </div>
               )}
               {selectedVenda.custo_adicional > 0 && (
-                <div className="flex justify-between text-blue-500 font-bold">
+                <div className={`flex justify-between font-bold ${selectedVenda.custo_no_lucro && isAdminTab ? 'text-green-500' : 'text-red-500'}`}>
                   <span>{selectedVenda.desc_custo_adicional || 'Custo Adicional'}:</span>
-                  <span>+ {formatCurrency(selectedVenda.custo_adicional)}</span>
+                  <span>{selectedVenda.custo_no_lucro && isAdminTab ? '+' : '+'} {formatCurrency(selectedVenda.custo_adicional)}</span>
                 </div>
               )}
+              
+              {isAdminTab && (
+                <>
+                  <div className="flex justify-between text-orange-400 font-bold border-t border-border/30 pt-1 mt-1">
+                    <span>Custo Total Estoque:</span>
+                    <span>- {formatCurrency(Number(selectedVenda.total_custo) || 0)}</span>
+                  </div>
+                  <div className="flex justify-between text-green-500 font-black pt-1">
+                    <span>LUCRO LÍQUIDO FINAL:</span>
+                    <span>{formatCurrency(Number(selectedVenda.lucro_liquido) || 0)}</span>
+                  </div>
+                  <div className="flex justify-between text-blue-500 font-bold">
+                    <span>Margem Operacional:</span>
+                    <span>{selectedVenda.total > 0 ? ((Number(selectedVenda.lucro_liquido) || 0) / selectedVenda.total * 100).toFixed(2) : '0.00'}%</span>
+                  </div>
+                </>
+              )}
+
               {selectedVenda.observacao && (
                 <div className="mt-3 p-3 bg-secondary/50 rounded-xl text-xs text-muted-foreground border border-border/50">
-                  <p className="font-black uppercase mb-1 text-[10px] text-primary">Observações do Pedido:</p>
+                  <p className={`font-black uppercase mb-1 text-[10px] ${isAdminTab ? 'text-blue-500' : 'text-primary'}`}>Observações do Pedido:</p>
                   {selectedVenda.observacao}
                 </div>
               )}
             </div>
 
-            <div className="bg-secondary p-4 rounded-xl flex justify-between items-center">
-              <span className="font-bold text-muted-foreground">TOTAL FINAL</span>
-              <span className="text-xl font-black text-primary">{formatCurrency(selectedVenda.total)}</span>
-            </div>
+            {!isAdminTab && (
+              <div className="bg-secondary p-4 rounded-xl flex justify-between items-center mt-2">
+                <span className="font-bold text-muted-foreground">TOTAL FINAL</span>
+                <span className="text-xl font-black text-primary">{formatCurrency(selectedVenda.total)}</span>
+              </div>
+            )}
 
             <button 
-              onClick={() => imprimirVenda(selectedVenda, itensDetalhe)}
-              className="w-full bg-primary text-primary-foreground font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:opacity-90 transition-all"
+              onClick={() => isAdminTab ? imprimirVendaAdmin(selectedVenda, itensDetalhe) : imprimirVenda(selectedVenda, itensDetalhe)}
+              className={`w-full font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:opacity-90 transition-all text-white ${isAdminTab ? 'bg-blue-600' : 'bg-primary'}`}
             >
-              <Printer size={18}/> IMPRIMIR COMPROVANTE
+              <Printer size={18}/> {isAdminTab ? 'IMPRIMIR COMPROVANTE INTERNO' : 'IMPRIMIR COMPROVANTE'}
             </button>
           </div>
         </div>

@@ -9,7 +9,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 
 interface CartItem {
-  id: string;
+  cartItemId: string; 
+  id: string; 
   nome: string;
   codigo: string;
   price: number;
@@ -18,6 +19,8 @@ interface CartItem {
   stock: number;
   discount: number;
   discountType: 'percent' | 'fixed';
+  lote_id?: string;
+  lote_codigo?: string;
 }
 
 interface Produto {
@@ -28,6 +31,8 @@ interface Produto {
   preco_custo: number;
   estoque_atual: number;
   categoria: string;
+  lote_id?: string;
+  lote_codigo?: string;
 }
 
 interface Pessoa {
@@ -163,17 +168,42 @@ export default function PDV() {
     const query = term.trim();
     if (!query) { setProdutos([]); setShowResults(false); return; }
     try {
-      const { data, error } = await supabase.from('produtos').select('*')
+      const { data: pData } = await supabase.from('produtos').select('*')
         .or(`nome.ilike.%${query}%,codigo.ilike.%${query}%,categoria.ilike.%${query}%`)
         .limit(10);
-      if (error) throw error;
-      setProdutos((data || []).map(p => ({
+      
+      const { data: lData } = await supabase.from('produto_lotes')
+        .select('*, produtos(*)')
+        .ilike('codigo_barras', `%${query}%`)
+        .limit(5);
+
+      let combined: Produto[] = (pData || []).map(p => ({
         id: p.id, nome: p.nome, codigo: p.codigo || '',
         preco_venda: Number(p.preco_venda) || 0,
         preco_custo: Number(p.preco_custo) || 0,
         estoque_atual: Number(p.estoque_atual) || 0,
         categoria: p.categoria || ''
-      })));
+      }));
+
+      if (lData) {
+        lData.forEach(lote => {
+          if (lote.produtos && !combined.find(p => p.id === lote.produtos.id && p.lote_id === lote.id)) {
+            combined.push({
+              id: lote.produtos.id,
+              nome: lote.produtos.nome, // Removido o sufixo (LOTE: ...)
+              codigo: lote.produtos.codigo || '',
+              preco_venda: Number(lote.produtos.preco_venda) || 0,
+              preco_custo: Number(lote.produtos.preco_custo) || 0,
+              estoque_atual: Number(lote.produtos.estoque_atual) || 0,
+              categoria: lote.produtos.categoria || '',
+              lote_id: lote.id,
+              lote_codigo: lote.codigo_barras
+            });
+          }
+        });
+      }
+
+      setProdutos(combined);
       setShowResults(true);
     } catch (error) { toast.error("Erro ao buscar produtos"); }
   }, []);
@@ -183,6 +213,41 @@ export default function PDV() {
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
 
+  const handleSearchExact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const query = search.trim();
+    if (!query) return;
+
+    let { data: prod } = await supabase.from('produtos').select('*').eq('codigo', query).eq('ativo', true).maybeSingle();
+    let loteId = undefined;
+    let loteCodigo = undefined;
+
+    if (!prod) {
+      const { data: lote } = await supabase.from('produto_lotes').select('*, produtos(*)').eq('codigo_barras', query).maybeSingle();
+      if (lote && lote.produtos) {
+        prod = lote.produtos;
+        loteId = lote.id;
+        loteCodigo = lote.codigo_barras;
+      }
+    }
+
+    if (prod) {
+      addToCart({
+        id: prod.id, 
+        nome: prod.nome, // Removido o sufixo (LOTE: ...)
+        codigo: prod.codigo || '',
+        preco_venda: Number(prod.preco_venda) || 0,
+        preco_custo: Number(prod.preco_custo) || 0,
+        estoque_atual: Number(prod.estoque_atual) || 0,
+        categoria: prod.categoria || '',
+        lote_id: loteId,
+        lote_codigo: loteCodigo
+      });
+    } else {
+      toast.error('Produto ou Lote não encontrado');
+    }
+  };
+
   const addToCart = (product: Produto) => {
     if (product.estoque_atual <= 0) { 
       toast.error('Produto sem estoque disponível');
@@ -191,15 +256,17 @@ export default function PDV() {
     
     const price = promocoes[product.id] || product.preco_venda;
     setCart((prev) => {
-      const existing = prev.find((i) => i.id === product.id);
+      const existing = prev.find((i) => i.id === product.id && i.lote_id === product.lote_id);
       if (existing) {
         if (existing.quantity >= product.estoque_atual) { 
           toast.error('Limite de estoque atingido'); 
           return prev; 
         }
-        return prev.map((i) => i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i);
+        return prev.map((i) => i.cartItemId === existing.cartItemId ? { ...i, quantity: i.quantity + 1 } : i);
       }
+ 
       return [...prev, {
+        cartItemId: crypto.randomUUID(), 
         id: product.id, 
         nome: product.nome, 
         codigo: product.codigo,
@@ -209,16 +276,17 @@ export default function PDV() {
         stock: product.estoque_atual,
         discount: 0, 
         discountType: 'percent' as const,
+        lote_id: product.lote_id,
+        lote_codigo: product.lote_codigo
       }];
     });
-
     setSearch('');
     setShowResults(false);
   };
 
-  const updateQty = (id: string, delta: number) => {
+  const updateQty = (cartItemId: string, delta: number) => {
     setCart((prev) => prev.map((i) => {
-      if (i.id !== id) return i;
+      if (i.cartItemId !== cartItemId) return i;
       const newQty = i.quantity + delta;
       if (newQty <= 0) return null as any;
       if (newQty > i.stock) { toast.error('Estoque insuficiente'); return i; }
@@ -226,11 +294,13 @@ export default function PDV() {
     }).filter(Boolean));
   };
 
-  const updateItemDiscount = (id: string, value: number, type: 'percent' | 'fixed') => {
-    setCart((prev) => prev.map((i) => i.id === id ? { ...i, discount: value, discountType: type } : i));
+  const updateItemDiscount = (cartItemId: string, value: number, type: 'percent' | 'fixed') => {
+    setCart((prev) => prev.map((i) => i.cartItemId === cartItemId ? { ...i, discount: value, discountType: type } : i));
   };
 
-  const removeItem = (id: string) => { setCart((prev) => prev.filter((i) => i.id !== id)); };
+  const removeItem = (cartItemId: string) => { 
+    setCart((prev) => prev.filter((i) => i.cartItemId !== cartItemId)); 
+  };
 
   const getItemTotal = (item: CartItem) => {
     const base = item.price * item.quantity;
@@ -278,7 +348,6 @@ export default function PDV() {
     setSaving(true);
     try {
       const selectedVendedor = vendedores.find(v => v.id === vendedorId);
-      
       const { data: venda, error: vendaErr } = await supabase.from('vendas').insert({
         cliente_id: clienteObj?.id || null,
         cliente_nome_manual: clienteObj ? null : clienteManual,
@@ -310,12 +379,24 @@ export default function PDV() {
         desconto_tipo_item: item.discountType,
         total: getItemTotal(item)
       }));
-
       const { error: itensErr } = await supabase.from('vendas_itens').insert(itensParaSalvar);
       if (itensErr) throw itensErr;
 
       for (const item of cart) {
         await supabase.from('produtos').update({ estoque_atual: item.stock - item.quantity }).eq('id', item.id);
+        if (item.lote_id) {
+          const { data: lote } = await supabase.from('produto_lotes').select('quantidade_atual, quantidade').eq('id', item.lote_id).single();
+          if (lote) {
+             const qtdAtualLote = Number(lote.quantidade_atual || lote.quantidade || 0);
+             const novaQtd = qtdAtualLote - item.quantity;
+             const novoStatus = novaQtd <= 0 ? 'esgotado' : 'ativo';
+             await supabase.from('produto_lotes').update({
+               quantidade_atual: novaQtd,
+               quantidade: novaQtd, 
+               status: novoStatus
+             }).eq('id', item.lote_id);
+          }
+        }
       }
 
       if (valorAbatidoCredito > 0 && clienteObj) {
@@ -324,20 +405,12 @@ export default function PDV() {
 
       const formaNome = formas.find(f => f.id === formaPagamentoId)?.nome.toLowerCase() || '';
       if (formaNome.includes('dinheiro')) {
-        await supabase.from('caixa').insert({
-          usuario_id: user?.id,
-          tipo: 'Entrada',
+        await supabase.from('caixa_movimentos').insert({
+          usuario_id: user?.name || user?.id || 'Sistema',
+          tipo: 'entrada',
           valor: total,
-          descricao: 'Venda paga em dinheiro.'
+          descricao: 'Venda realizada.'
         });
-        if (troco > 0) {
-          await supabase.from('caixa').insert({
-            usuario_id: user?.id,
-            tipo: 'Saída',
-            valor: troco,
-            descricao: `Troco venda de ${fCurrency(total)}.`
-          });
-        }
       }
 
       setShowSuccess(true);
@@ -364,13 +437,11 @@ export default function PDV() {
           <p className="text-muted-foreground text-sm max-w-sm mx-auto">
             O terminal de vendas está desativado pois o caixa do dia ainda não foi aberto ou já foi encerrado.
           </p>
-          
           <div className="bg-card border border-border p-8 rounded-3xl shadow-2xl space-y-6">
              <div className="flex items-center justify-center gap-2 mb-2">
                 <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
                 <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Status: Caixa Fechado</span>
              </div>
-             
              <button 
               onClick={handleQuickAbertura}
               className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-black uppercase text-sm shadow-xl shadow-primary/20 hover:scale-[1.02] transition-transform flex items-center justify-center gap-3"
@@ -405,18 +476,18 @@ export default function PDV() {
         </div>
 
         <div className="p-3 border-b border-border">
-          <div className="relative">
+          <form onSubmit={handleSearchExact} className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input type="text" value={search}
               onChange={(e) => setSearch(e.target.value)}
               onFocus={() => search.trim().length > 0 && setShowResults(true)}
-              placeholder="Buscar por nome, código ou categoria..."
+              placeholder="Buscar por nome, código ou código do lote (Bipar)..."
               className="w-full h-10 pl-10 pr-4 rounded-lg border border-input bg-secondary text-sm focus:outline-none" />
             
             {showResults && (
               <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-xl z-50 max-h-60 overflow-auto scrollbar-thin scrollbar-thumb-zinc-800">
-                {produtos.map((p) => (
-                  <button key={p.id} onClick={() => addToCart(p)}
+                {produtos.map((p, idx) => (
+                  <button key={p.id + '-' + idx} type="button" onClick={() => addToCart(p)}
                     className={`w-full flex items-center justify-between px-3 py-2.5 hover:bg-accent/50 text-left border-b border-border last:border-0 ${p.estoque_atual <= 0 ? 'bg-red-500/20 border-red-500/40' : ''}`}>
                     <div>
                       <p className={`text-sm font-bold ${p.estoque_atual <= 0 ? 'text-red-500 underline' : ''}`}>{p.nome}</p>
@@ -429,7 +500,7 @@ export default function PDV() {
                 ))}
               </div>
             )}
-          </div>
+          </form>
         </div>
 
         {clienteObj?.observacoes && (
@@ -446,7 +517,7 @@ export default function PDV() {
             </div>
           ) : (
             cart.map((item) => (
-              <div key={item.id} className="rounded-lg border border-border bg-card p-3 flex flex-col gap-2">
+              <div key={item.cartItemId} className="rounded-lg border border-border bg-card p-3 flex flex-col gap-2">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.nome}</p>
@@ -456,26 +527,26 @@ export default function PDV() {
                     <div className="flex items-center gap-1.5 border-r border-border pr-3">
                        <span className="text-[10px] font-bold text-muted-foreground uppercase">Desc. Item</span>
                        <input type="number" value={item.discount || ''} 
-                        onChange={(e) => updateItemDiscount(item.id, Number(e.target.value), item.discountType)}
+                        onChange={(e) => updateItemDiscount(item.cartItemId, Number(e.target.value), item.discountType)}
                         className="w-12 h-7 bg-secondary border border-border rounded text-[11px] px-1 font-mono" />
                        <select value={item.discountType} 
-                        onChange={(e) => updateItemDiscount(item.id, item.discount, e.target.value as any)}
+                        onChange={(e) => updateItemDiscount(item.cartItemId, item.discount, e.target.value as any)}
                         className="h-7 bg-secondary border border-border rounded text-[10px] px-0.5">
                         <option value="percent">%</option>
                         <option value="fixed">R$</option>
-                       </select>
+                    </select>
                     </div>
                     <div className="flex items-center rounded-lg border border-border bg-secondary">
-                      <button onClick={() => updateQty(item.id, -1)} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-l-lg"><Minus className="h-3 w-3" /></button>
+                      <button type="button" onClick={() => updateQty(item.cartItemId, -1)} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-l-lg"><Minus className="h-3 w-3" /></button>
                       <span className="h-8 w-8 flex items-center justify-center text-sm font-mono border-x border-border">{item.quantity}</span>
-                      <button onClick={() => updateQty(item.id, 1)} disabled={item.quantity >= item.stock} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-r-lg"><Plus className="h-3 w-3" /></button>
+                      <button type="button" onClick={() => updateQty(item.cartItemId, 1)} disabled={item.quantity >= item.stock} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-r-lg"><Plus className="h-3 w-3" /></button>
                     </div>
                     <span className="text-sm font-mono font-bold w-24 text-right">{fCurrency(getItemTotal(item))}</span>
-                    <button onClick={() => removeItem(item.id)} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
+                    <button type="button" onClick={() => removeItem(item.cartItemId)} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </div>
               </div>
-            ))
+             ))
           )}
         </div>
       </div>
@@ -495,7 +566,7 @@ export default function PDV() {
               {vendedores.map(v => (
                  <option key={v.id} value={v.id} className="bg-background text-foreground">
                   {v.nome_usuario.toUpperCase()}
-                </option>
+                 </option>
               ))}
             </select>
           </div>
@@ -605,7 +676,7 @@ export default function PDV() {
                 </span>
               )}
             </div>
-            <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
+           <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => { setCart([]); setCustoAdicional(0); setDescCusto(''); setUsarCredito(false); setObservacao(''); }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
@@ -629,7 +700,7 @@ export default function PDV() {
             <h2 className="text-lg font-bold">Finalizar Venda</h2>
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">Forma de Pagamento *</label>
+                 <label className="text-xs font-medium text-muted-foreground">Forma de Pagamento *</label>
                 <select value={formaPagamentoId} onChange={(e) => setFormaPagamentoId(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-input bg-secondary text-sm">
                   <option value="">Selecione...</option>
                   {formas.map(f => <option key={f.id} value={f.id}>{f.nome.toUpperCase()}</option>)}
@@ -647,15 +718,15 @@ export default function PDV() {
                     </div>
                   )}
                 </div>
-              )}
+               )}
 
               <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
                 <div className="flex justify-between text-sm font-bold">
                   <span>Total Final</span>
                   <span className="font-mono text-primary text-lg">{fCurrency(total)}</span>
                 </div>
-              </div>
-            </div>
+               </div>
+             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={() => setShowFinalize(false)} className="h-10 px-4 rounded-lg border border-border text-sm font-medium">Cancelar</button>
               <button onClick={finalizeSale} disabled={saving} className="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20">{saving ? 'Processando...' : 'Confirmar Venda'}</button>

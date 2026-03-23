@@ -1,9 +1,24 @@
 import { useState, useEffect } from 'react';
-import { Package, Plus, Search, Pencil, Trash2, X, Save, Camera, Printer, Filter, DollarSign, BarChart3, TrendingUp, Boxes } from 'lucide-react';
+import { Package, Plus, Search, Pencil, Trash2, X, Save, Camera, Printer, Filter, DollarSign, BarChart3, TrendingUp, Boxes, AlertTriangle, Calendar, ArrowRightLeft, History, Activity } from 'lucide-react';
 import { supabase, logAction } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+
+interface Lote {
+  id: string;
+  produto_id: string;
+  quantidade: number;
+  custo: number;
+  data_entrada: string;
+  data_validade: string;
+  observacao: string;
+  criado_em?: string;
+  codigo_barras: string;
+  quantidade_inicial: number;
+  quantidade_atual: number;
+  status: string;
+}
 
 interface Produto {
   id: string;
@@ -21,17 +36,19 @@ interface Produto {
   ativo: boolean;
   data_validade: string;
   data_entrada: string;
+  observacao: string;
   criado_em: string;
   valor_estoque: number;
   lucro_estoque: number;
   lucro_produto: number;
+  lotes?: Lote[];
 }
 
 const emptyProduct: Partial<Produto> = {
   nome: '', marca: '', codigo: '', unidade: 'Und', categoria: '', fornecedor: '',
   custo: 0, preco_venda: 0, margem: 0, estoque_atual: 0, estoque_minimo: 0,
   ativo: true, data_validade: '', data_entrada: new Date().toISOString().split('T')[0],
-  valor_estoque: 0, lucro_estoque: 0, lucro_produto: 0,
+  observacao: '', valor_estoque: 0, lucro_estoque: 0, lucro_produto: 0,
 };
 
 export default function Produtos() {
@@ -40,14 +57,31 @@ export default function Produtos() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [showLoteForm, setShowLoteForm] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  
   const [editing, setEditing] = useState<Produto | null>(null);
   const [form, setForm] = useState<Partial<Produto>>(emptyProduct);
-  
+  const [loteForm, setLoteForm] = useState({ 
+    quantidade: 0, 
+    custo: 0, 
+    data_entrada: new Date().toISOString().split('T')[0], 
+    data_validade: '', 
+    observacao: '',
+    codigo_barras: ''
+  });
   const [fornecedores, setFornecedores] = useState<{ nome: string }[]>([]);
   const [categoriasExistentes, setCategoriasExistentes] = useState<string[]>([]);
   
-  const [scanning, setScanning] = useState(false);
+  const [scanMode, setScanMode] = useState<'produto' | 'lote' | null>(null);
+  
   const [maxEstoqueFilter, setMaxEstoqueFilter] = useState<number>(999);
+  const [filtroValidade, setFiltroValidade] = useState('');
+  // Filtros Histórico
+  const [historicoBusca, setHistoricoBusca] = useState('');
+  const [historicoFiltroData, setHistoricoFiltroData] = useState('');
+
+  const [activeTab, setActiveTab] = useState<'todos' | 'estoque_baixo' | 'sem_estoque' | 'vencidos'>('todos');
 
   useEffect(() => { 
     load();
@@ -56,15 +90,19 @@ export default function Produtos() {
 
   useEffect(() => {
     let scanner: Html5QrcodeScanner | null = null;
-    if (scanning) {
+    if (scanMode) {
       scanner = new Html5QrcodeScanner("reader", { 
         fps: 10, 
         qrbox: { width: 250, height: 150 },
         aspectRatio: 1.777778
       }, false);
       scanner.render((decodedText) => {
-        updateField('codigo', decodedText);
-        setScanning(false);
+        if (scanMode === 'produto') {
+          updateField('codigo', decodedText);
+        } else if (scanMode === 'lote') {
+          setLoteForm(prev => ({ ...prev, codigo_barras: decodedText }));
+        }
+        setScanMode(null);
         scanner?.clear();
         toast.success("Código lido com sucesso!");
       }, (error) => {});
@@ -74,14 +112,26 @@ export default function Produtos() {
         scanner.clear().catch(err => console.error("Erro ao fechar scanner", err));
       }
     };
-  }, [scanning]);
+  }, [scanMode]);
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase.from('produtos').select('*').order('nome');
-    setProdutos(data || []);
-    if (data) {
-      const cats = Array.from(new Set(data.map(p => p.categoria).filter(Boolean)));
+    const { data: pData } = await supabase.from('produtos').select('*').order('nome');
+    const { data: lData } = await supabase.from('produto_lotes').select('*');
+
+    const produtosComLotes = (pData || []).map(p => {
+      const lotesDoProduto = (lData || []).filter((l: any) => l.produto_id === p.id);
+      return { ...p, lotes: lotesDoProduto };
+    });
+    setProdutos(produtosComLotes);
+    
+    if (editing) {
+      const updatedEditing = produtosComLotes.find(p => p.id === editing.id);
+      if (updatedEditing) setEditing(updatedEditing);
+    }
+    
+    if (pData) {
+      const cats = Array.from(new Set(pData.map(p => p.categoria).filter(Boolean)));
       setCategoriasExistentes(cats);
     }
     setLoading(false);
@@ -96,6 +146,51 @@ export default function Produtos() {
     setFornecedores(list || []);
   }
 
+  function getDaysDiff(dateStr: string) {
+    if (!dateStr) return 999;
+    const valDate = new Date(dateStr);
+    valDate.setUTCHours(0,0,0,0);
+    const today = new Date();
+    today.setUTCHours(0,0,0,0);
+    return Math.ceil((valDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  function getStatusValidade(p: Produto) {
+    let qtd_vencida = 0;
+    let qtd_proxima = 0;
+    let dias_proximo = 999;
+
+    const lotesQtd = p.lotes?.reduce((sum, l) => sum + Number(l.quantidade_atual || l.quantidade), 0) || 0;
+    const baseQtd = Math.max(0, p.estoque_atual - lotesQtd);
+
+    if (baseQtd > 0 && p.data_validade) {
+      const diff = getDaysDiff(p.data_validade);
+      if (diff < 0) qtd_vencida += baseQtd;
+      else if (diff <= 30) {
+        qtd_proxima += baseQtd;
+        if (diff < dias_proximo) dias_proximo = diff;
+      }
+    }
+
+    if (p.lotes) {
+      p.lotes.forEach(l => {
+        const qtdAtualLote = Number(l.quantidade_atual || l.quantidade);
+        if (qtdAtualLote > 0 && l.data_validade) {
+          const diff = getDaysDiff(l.data_validade);
+          if (diff < 0) qtd_vencida += qtdAtualLote;
+          else if (diff <= 30) {
+            qtd_proxima += qtdAtualLote;
+            if (diff < dias_proximo) dias_proximo = diff;
+          }
+        }
+      });
+    }
+
+    if (qtd_vencida > 0) return { status: 'vencido', qtd: qtd_vencida };
+    if (qtd_proxima > 0) return { status: 'proximo', qtd: qtd_proxima, dias: dias_proximo };
+    return { status: 'ok', qtd: 0 };
+  }
+
   const filtered = produtos.filter((p) => {
     const matchesSearch = 
       p.nome?.toLowerCase().includes(search.toLowerCase()) ||
@@ -104,8 +199,15 @@ export default function Produtos() {
       p.categoria?.toLowerCase().includes(search.toLowerCase());
     
     const matchesEstoque = p.estoque_atual <= maxEstoqueFilter;
+    const matchesValidade = filtroValidade ? p.data_validade === filtroValidade : true;
+    const statusValidade = getStatusValidade(p);
 
-    return matchesSearch && matchesEstoque;
+    let matchesTab = true;
+    if (activeTab === 'estoque_baixo') matchesTab = p.estoque_atual > 0 && p.estoque_atual <= (p.estoque_minimo || 0);
+    if (activeTab === 'sem_estoque') matchesTab = p.estoque_atual <= 0;
+    if (activeTab === 'vencidos') matchesTab = statusValidade.status === 'vencido';
+
+    return matchesSearch && matchesEstoque && matchesValidade && matchesTab;
   });
 
   const totalProdutos = filtered.length;
@@ -184,10 +286,105 @@ export default function Produtos() {
   }
 
   function openEdit(p: Produto) {
-    if (!isAdmin) { toast.error('Apenas administradores podem editar.'); return; }
     setEditing(p);
     setForm({ ...p });
     setShowForm(true);
+  }
+
+  function abrirModalLote() {
+    let ultimoCodigo = editing?.codigo || '';
+    if (editing?.lotes && editing.lotes.length > 0) {
+      const lotesOrdenados = [...editing.lotes].sort((a, b) => new Date(b.data_entrada).getTime() - new Date(a.data_entrada).getTime());
+      ultimoCodigo = lotesOrdenados[0].codigo_barras || ultimoCodigo;
+    }
+
+    setLoteForm({
+      quantidade: 0,
+      custo: 0,
+      data_entrada: new Date().toISOString().split('T')[0],
+      data_validade: '',
+      observacao: '',
+      codigo_barras: ultimoCodigo
+    });
+    setShowLoteForm(true);
+  }
+
+  async function enviarParaTrocasAvaria(p: Produto) {
+    const stValidade = getStatusValidade(p);
+    const qtdSugerida = stValidade.status === 'vencido' ? stValidade.qtd : 1;
+    const qtdStr = prompt(`Quantidade de "${p.nome}" para dar baixa como avaria:`, String(qtdSugerida));
+    if (!qtdStr) return;
+    
+    const qtdBaixa = Number(qtdStr);
+    if (isNaN(qtdBaixa) || qtdBaixa <= 0 || qtdBaixa > p.estoque_atual) {
+      toast.error("Quantidade inválida ou superior ao estoque atual.");
+      return;
+    }
+
+    const lotesQtd = p.lotes?.reduce((sum, l) => sum + Number(l.quantidade_atual || l.quantidade), 0) || 0;
+    const baseQtd = Math.max(0, p.estoque_atual - lotesQtd);
+
+    const allSources = [
+      { isBase: true, id: p.id, quantidade_atual: baseQtd, validade: p.data_validade },
+      ...(p.lotes || []).map(l => ({ isBase: false, id: l.id, quantidade_atual: Number(l.quantidade_atual || l.quantidade), validade: l.data_validade }))
+    ].sort((a, b) => new Date(a.validade || '2099-01-01').getTime() - new Date(b.validade || '2099-01-01').getTime());
+    let remainingToDeduct = qtdBaixa;
+
+    for (const source of allSources) {
+      if (remainingToDeduct <= 0) break;
+      if (source.quantidade_atual > 0) {
+        const deduct = Math.min(source.quantidade_atual, remainingToDeduct);
+        if (!source.isBase) {
+          const novaQtdAtualLote = source.quantidade_atual - deduct;
+          const novoStatusLote = novaQtdAtualLote <= 0 ? 'esgotado' : 'ativo';
+          await supabase.from('produto_lotes').update({ 
+            quantidade_atual: novaQtdAtualLote,
+            quantidade: novaQtdAtualLote, 
+            status: novoStatusLote
+          }).eq('id', source.id);
+        }
+        remainingToDeduct -= deduct;
+      }
+    }
+
+    const novoEstoque = p.estoque_atual - qtdBaixa;
+    const custo = Number(p.custo) || 0;
+    const venda = Number(p.preco_venda) || 0;
+    const lucro_produto = venda - custo;
+    const { error: prodError } = await supabase.from('produtos').update({
+      estoque_atual: novoEstoque,
+      valor_estoque: custo * novoEstoque,
+      lucro_estoque: lucro_produto * novoEstoque
+    }).eq('id', p.id);
+    if (prodError) {
+      toast.error('Erro ao abater o estoque: ' + prodError.message);
+      return;
+    }
+
+    const payloadMov = {
+      id_operacao: crypto.randomUUID(),
+      is_troca: false,
+      is_devolucao: false,
+      is_estorno: true, 
+      cliente_nome: 'Baixa Automática (Sistema)',
+      vendedor_nome: user?.name || 'Sistema',
+      produto_nome: p.nome,
+      quantidade: qtdBaixa,
+      valor_unitario: p.preco_venda,
+      condicao_produto: 'perda',
+      motivo: 'Estoque vencido / Avaria.'
+    };
+
+    const { error: movError } = await supabase.from('movimentacoes_estoque').insert([payloadMov]);
+
+    if (movError) {
+      toast.error('Erro ao registrar na tela de trocas: ' + movError.message);
+      return;
+    }
+
+    await logAction(user?.name || '', 'baixa_avaria_vencido', `${p.nome} (Qtd: ${qtdBaixa})`);
+    toast.success('Baixa registrada com sucesso! Lotes e Estoque atualizados.');
+    load();
   }
 
   async function handleDelete(p: Produto) {
@@ -201,7 +398,6 @@ export default function Produtos() {
 
   function updateField(field: string, value: any) {
     let nextValue = value;
-    
     if (['custo', 'preco_venda'].includes(field)) {
       nextValue = parseCurrencyToNumber(value);
     }
@@ -210,7 +406,6 @@ export default function Produtos() {
     const custo = Number(next.custo) || 0;
     let venda = Number(next.preco_venda) || 0;
     const estoque = Number(next.estoque_atual) || 0;
-    
     if ((field === 'custo' || field === 'preco_venda') && custo > 0) {
       next.margem = Number((((venda - custo) / custo) * 100).toFixed(2));
     } else if (field === 'margem' && custo > 0) {
@@ -226,6 +421,7 @@ export default function Produtos() {
 
   async function handleSave() {
     if (!form.nome) { toast.error('Nome é obrigatório'); return; }
+    
     const payload = {
       nome: form.nome, marca: form.marca || '', codigo: form.codigo || '',
       unidade: form.unidade || 'Und', categoria: form.categoria || '',
@@ -238,6 +434,7 @@ export default function Produtos() {
       ativo: form.ativo !== false,
       data_validade: form.data_validade || null,
       data_entrada: form.data_entrada || null,
+      observacao: form.observacao || '',
       valor_estoque: Number(form.valor_estoque) || 0,
       lucro_estoque: Number(form.lucro_estoque) || 0,
       lucro_produto: Number(form.lucro_produto) || 0,
@@ -258,127 +455,241 @@ export default function Produtos() {
     loadAuxiliarData();
   }
 
-  function genCode() {
+  async function handleSaveLote() {
+    if (!editing) return;
+    if (loteForm.quantidade <= 0 || loteForm.custo <= 0) {
+      toast.error('Preencha a quantidade e o custo do novo lote.');
+      return;
+    }
+
+    const estoqueAntigo = Number(editing.estoque_atual) || 0;
+    const custoAntigo = Number(editing.custo) || 0;
+    const qtdNovo = Number(loteForm.quantidade);
+    const custoNovo = Number(loteForm.custo);
+
+    const custoMedio = ((estoqueAntigo * custoAntigo) + (qtdNovo * custoNovo)) / (estoqueAntigo + qtdNovo);
+    const novoEstoque = estoqueAntigo + qtdNovo;
+
+    const { error: loteError } = await supabase.from('produto_lotes').insert({
+      produto_id: editing.id,
+      quantidade: qtdNovo, 
+      quantidade_inicial: qtdNovo,
+      quantidade_atual: qtdNovo,
+      custo: custoNovo,
+      data_entrada: loteForm.data_entrada,
+      data_validade: loteForm.data_validade || null,
+      observacao: loteForm.observacao || '',
+      codigo_barras: loteForm.codigo_barras || '',
+      status: 'ativo'
+    });
+    if (loteError) {
+      toast.error('Erro ao registrar lote: ' + loteError.message);
+      return;
+    }
+
+    const venda = Number(editing.preco_venda) || 0;
+    const lucroProduto = venda - custoMedio;
+    const margemNova = ((venda - custoMedio) / custoMedio) * 100;
+
+    // Atualiza a tabela 'produtos' com os dados do último lote
+    const { error: prodError } = await supabase.from('produtos').update({
+      custo: custoMedio,
+      estoque_atual: novoEstoque,
+      margem: Number(margemNova.toFixed(2)),
+      lucro_produto: lucroProduto,
+      valor_estoque: custoMedio * novoEstoque,
+      lucro_estoque: lucroProduto * novoEstoque,
+      data_entrada: loteForm.data_entrada,
+      data_validade: loteForm.data_validade || null,
+      codigo: loteForm.codigo_barras || editing.codigo
+    }).eq('id', editing.id);
+
+    if (prodError) {
+      toast.error('Erro ao atualizar produto com os dados do lote.');
+      return;
+    }
+
+    toast.success('Novo lote cadastrado, estoque e dados de identificação atualizados!');
+    setShowLoteForm(false);
+    load();
+  }
+
+  function genCodeProduto() {
     updateField('codigo', 'P' + String(Date.now()).slice(-6));
   }
 
+  function genCodeLote() {
+    setLoteForm(prev => ({ ...prev, codigo_barras: 'L' + String(Date.now()).slice(-6) }));
+  }
+
+  const historicoLotesFiltrados = (editing?.lotes || []).filter(l => {
+    const term = historicoBusca.toLowerCase();
+    const matchBusca = (l.codigo_barras || '').toLowerCase().includes(term) || (l.observacao || '').toLowerCase().includes(term);
+    const matchData = historicoFiltroData ? l.data_entrada === historicoFiltroData : true;
+    return matchBusca && matchData;
+  });
+  const mDash = {
+    totalComprado: (editing?.lotes || []).reduce((acc, l) => acc + Number(l.quantidade_inicial || l.quantidade), 0),
+    estoqueLotesAtual: (editing?.lotes || []).reduce((acc, l) => acc + Number(l.quantidade_atual || l.quantidade), 0),
+    vencidos: (editing?.lotes || []).filter(l => getDaysDiff(l.data_validade) < 0 && Number(l.quantidade_atual || l.quantidade) > 0).length,
+    custoMaisAlto: Math.max(...(editing?.lotes || []).map(l => Number(l.custo)), 0)
+  };
+
   return (
-    <div className="p-4 md:p-6 space-y-4 animate-fade-in text-zinc-100">
+    <div className="p-4 md:p-6 space-y-4 animate-fade-in text-foreground">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <h1 className="text-xl md:text-2xl font-bold">Cadastro de Produtos</h1>
         <div className="flex gap-2">
-          <button onClick={imprimirRelatorio} className="h-9 px-4 rounded-lg bg-zinc-800 text-white text-sm font-medium flex items-center gap-2 hover:bg-zinc-700 transition border border-zinc-700">
+          <button onClick={imprimirRelatorio} className="h-9 px-4 rounded-lg bg-muted text-foreground text-sm font-medium flex items-center gap-2 hover:bg-border transition border border-border">
             <Printer className="h-4 w-4" /> Relatório
           </button>
-          <button onClick={openNew} className="h-9 px-4 rounded-lg bg-orange-500 text-white text-sm font-medium flex items-center gap-2 hover:bg-orange-600 transition shadow-lg shadow-orange-500/20">
+          <button onClick={openNew} className="h-9 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium flex items-center gap-2 hover:bg-primary/90 transition shadow-lg">
             <Plus className="h-4 w-4" /> Novo Produto
           </button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
-          <div className="flex items-center justify-between text-zinc-500">
+        <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Total Produtos</span>
             <Boxes className="h-4 w-4" />
           </div>
-          <p className="text-2xl font-mono font-bold">{totalProdutos}</p>
+          <p className="text-2xl font-mono font-bold text-foreground">{totalProdutos}</p>
         </div>
-        <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
-          <div className="flex items-center justify-between text-zinc-500">
+        <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Total Estoque (Custo)</span>
             <DollarSign className="h-4 w-4" />
           </div>
           <p className="text-2xl font-mono font-bold text-orange-400">{formatCurrency(valorTotalEstoqueCusto)}</p>
         </div>
-        <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
-          <div className="flex items-center justify-between text-zinc-500">
+        <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Total Venda (Estoque)</span>
             <TrendingUp className="h-4 w-4" />
           </div>
           <p className="text-2xl font-mono font-bold text-green-400">{formatCurrency(valorTotalVendaPotencial)}</p>
         </div>
-        <div className="p-4 rounded-xl border border-zinc-800 bg-zinc-900/50 space-y-1">
-          <div className="flex items-center justify-between text-zinc-500">
-            <span className="text-xs font-bold uppercase">Lucro Total</span>
+        <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+          <div className="flex items-center justify-between text-muted-foreground">
+            <span className="text-xs font-bold uppercase">Lucro Total Médio</span>
             <BarChart3 className="h-4 w-4" />
           </div>
           <p className="text-2xl font-mono font-bold text-blue-400">{formatCurrency(lucroTotalProjetado)}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="flex space-x-2 border-b border-border pb-2 overflow-x-auto">
+        <button onClick={() => setActiveTab('todos')} className={`px-4 py-2 text-sm font-bold uppercase rounded-t-lg transition-colors ${activeTab === 'todos' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
+          Todos
+        </button>
+        <button onClick={() => setActiveTab('estoque_baixo')} className={`px-4 py-2 text-sm font-bold uppercase rounded-t-lg transition-colors ${activeTab === 'estoque_baixo' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
+          Estoque Baixo
+        </button>
+        <button onClick={() => setActiveTab('sem_estoque')} className={`px-4 py-2 text-sm font-bold uppercase rounded-t-lg transition-colors ${activeTab === 'sem_estoque' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
+          Sem Estoque
+        </button>
+        <button onClick={() => setActiveTab('vencidos')} className={`px-4 py-2 text-sm font-bold uppercase rounded-t-lg transition-colors flex items-center gap-2 ${activeTab === 'vencidos' ? 'bg-red-600 text-white' : 'text-muted-foreground hover:text-red-500 hover:bg-red-500/10'}`}>
+          Vencidos <AlertTriangle size={14} />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="relative md:col-span-2">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-zinc-500" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome, marca, código ou categoria..."
-            className="w-full h-10 pl-10 pr-4 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+            placeholder="Buscar por nome, marca, código..."
+            className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
+          />
+        </div>
+
+        <div className="relative">
+          <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <input
+            type="date"
+            value={filtroValidade} onChange={(e) => setFiltroValidade(e.target.value)}
+            className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
         </div>
         
         <div className="flex flex-col justify-center px-2">
-          <label className="text-[10px] uppercase text-zinc-500 font-bold mb-1 flex justify-between">
-            Filtro de Estoque: <span>Até {maxEstoqueFilter === 999 ? '∞' : maxEstoqueFilter}</span>
+          <label className="text-[10px] uppercase text-muted-foreground font-bold mb-1 flex justify-between">
+            Filtro Estoque Máx: <span>Até {maxEstoqueFilter === 999 ? '∞' : maxEstoqueFilter}</span>
           </label>
           <input 
             type="range" min="0" max="100" step="1" 
             value={maxEstoqueFilter > 100 ? 100 : maxEstoqueFilter} 
             onChange={(e) => setMaxEstoqueFilter(e.target.valueAsNumber === 100 ? 999 : e.target.valueAsNumber)}
-            className="w-full h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-orange-500"
+            className="w-full h-1.5 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
           />
         </div>
       </div>
 
       {loading ? (
-        <div className="h-32 bg-zinc-900 animate-pulse rounded-xl border border-zinc-800" />
+        <div className="h-32 bg-card animate-pulse rounded-xl border border-border shadow-sm" />
       ) : (
-        <div className="rounded-xl border border-zinc-800 overflow-hidden bg-zinc-900/50">
+        <div className="rounded-xl border border-border overflow-hidden bg-card shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left border-collapse">
-              <thead className="bg-zinc-900 text-zinc-400 border-b border-zinc-800">
+              <thead className="bg-muted/50 text-muted-foreground border-b border-border">
                 <tr>
-                  <th className="p-3 font-medium">Nome</th>
-                  <th className="p-3 font-medium">Marca</th>
-                  <th className="p-3 font-medium text-right">Custo Un.</th>
-                  <th className="p-3 font-medium text-right">Estoque</th>
-                  <th className="p-3 font-medium text-right">Vl. Estoque</th>
-                  <th className="p-3 font-medium text-right">Vl. Venda Tot.</th>
-                  <th className="p-3 font-medium text-right">Lucro Tot.</th>
-                  <th className="p-3 font-medium text-right">Ações</th>
+                  <th className="p-3 font-medium uppercase text-xs">Nome</th>
+                  <th className="p-3 font-medium uppercase text-xs">Marca</th>
+                  <th className="p-3 font-medium uppercase text-xs text-right">Custo Un.</th>
+                  <th className="p-3 font-medium uppercase text-xs text-right">Estoque</th>
+                  <th className="p-3 font-medium uppercase text-xs text-center">Data Entrada</th>
+                  <th className="p-3 font-medium uppercase text-xs text-center">Validade (Base)</th>
+                  <th className="p-3 font-medium uppercase text-xs text-right">Ações</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-border">
                 {filtered.map((p) => {
                   const isZerado = p.estoque_atual <= 0;
-                  const vlEstoque = Number(p.custo) * Number(p.estoque_atual);
-                  const vlVendaTot = Number(p.preco_venda) * Number(p.estoque_atual);
-                  const vlLucroTot = vlVendaTot - vlEstoque;
+                  const isBaixo = p.estoque_atual > 0 && p.estoque_atual <= (p.estoque_minimo || 0);
+                  const statusValidade = getStatusValidade(p);
+                  
+                  let highlightClass = '';
+                  if (statusValidade.status === 'vencido') highlightClass = 'animate-pulse bg-red-500/10 text-red-500';
+                  else if (statusValidade.status === 'proximo') highlightClass = 'bg-yellow-500/10 text-yellow-600';
+                  else if (isZerado) highlightClass = 'animate-pulse bg-red-500/10 text-red-500';
+                  else if (isBaixo) highlightClass = 'bg-orange-500/10 text-orange-500';
 
                   return (
                     <tr 
                       key={p.id} 
-                      className={`border-b border-zinc-800 hover:bg-white/5 transition-colors ${isZerado ? 'animate-pulse bg-red-900/20 text-red-400' : ''}`}
+                      className={`hover:bg-muted/20 transition-colors ${highlightClass}`}
                     >
                       <td className="p-3 font-medium">
                         <div className="flex flex-col">
-                          <span>{p.nome}</span>
-                          <span className="text-[10px] text-zinc-500">{p.categoria || 'Geral'}</span>
+                          <span className="text-foreground">{p.nome}</span>
+                          <span className="text-[10px] text-muted-foreground uppercase">{p.categoria || 'Geral'}</span>
                         </div>
-                        {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1 rounded uppercase w-fit">Sem Estoque</span>}
+                        {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Sem Estoque</span>}
+                        {statusValidade.status === 'vencido' && <span className="mt-1 text-[10px] bg-red-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vencido ({statusValidade.qtd} un.)</span>}
+                        {statusValidade.status === 'proximo' && <span className="mt-1 text-[10px] bg-yellow-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vence em {statusValidade.dias} dias ({statusValidade.qtd} un.)</span>}
                       </td>
-                      <td className="p-3 text-zinc-400 italic">
+                      <td className="p-3 text-muted-foreground italic">
                         {p.marca || '-'}
                       </td>
                       <td className="p-3 text-right font-mono text-orange-400/80">{formatCurrency(p.custo)}</td>
-                      <td className={`p-3 text-right font-mono font-bold ${isZerado ? 'text-red-500' : ''}`}>{p.estoque_atual} {p.unidade}</td>
-                      <td className="p-3 text-right font-mono text-zinc-300">{formatCurrency(vlEstoque)}</td>
-                      <td className="p-3 text-right font-mono text-green-400">{formatCurrency(vlVendaTot)}</td>
-                      <td className="p-3 text-right font-mono text-blue-400 font-bold">{formatCurrency(vlLucroTot)}</td>
+                      <td className={`p-3 text-right font-mono font-bold ${isZerado ? 'text-red-500' : 'text-foreground'}`}>{p.estoque_atual} {p.unidade}</td>
+                      <td className="p-3 text-center text-muted-foreground font-mono">
+                        {p.data_entrada ? new Date(p.data_entrada).toLocaleDateString('pt-BR') : '-'}
+                      </td>
+                      <td className="p-3 text-center text-muted-foreground font-bold font-mono">
+                        {p.data_validade ? new Date(p.data_validade).toLocaleDateString('pt-BR') : '-'}
+                      </td>
                       <td className="p-3 text-right">
                         <div className="flex justify-end gap-1">
-                          <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400"><Pencil className="h-3.5 w-3.5" /></button>
-                          <button onClick={() => handleDelete(p)} className="p-1.5 rounded hover:bg-red-500/10 text-zinc-400 hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                          {activeTab === 'vencidos' && (
+                            <button onClick={() => enviarParaTrocasAvaria(p)} className="p-1.5 rounded-lg hover:bg-red-500/20 text-red-500 flex items-center gap-1 text-[10px] font-bold uppercase border border-red-500/20 mr-2 transition-colors" title="Lançar como Avaria na tela de Trocas">
+                              <ArrowRightLeft className="h-3.5 w-3.5" /> Avaria
+                            </button>
+                          )}
+                          <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
+                          <button onClick={() => handleDelete(p)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                         </div>
                       </td>
                     </tr>
@@ -390,134 +701,281 @@ export default function Produtos() {
         </div>
       )}
 
-      {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-4">
-              <h2 className="text-lg font-bold text-orange-500">{editing ? 'Editar Produto' : 'Novo Produto'}</h2>
-              <button onClick={() => setShowForm(false)} className="text-zinc-500 hover:text-white transition"><X className="h-5 w-5" /></button>
+      {showForm && !showLoteForm && !showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-auto rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2xl animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-border pb-4">
+              <div className="flex items-center gap-4 flex-wrap">
+                <h2 className="text-lg font-black uppercase text-primary italic tracking-tighter">{editing ? 'Editar Produto' : 'Novo Produto'}</h2>
+                {editing && (
+                  <div className="flex gap-2">
+                    <button onClick={abrirModalLote} className="h-8 px-3 bg-primary/10 text-primary border border-primary/20 rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-primary/20 transition">
+                      <Boxes className="h-3.5 w-3.5" /> Cadastrar Novo Lote
+                    </button>
+                    <button onClick={() => setShowHistoryModal(true)} className="h-8 px-3 bg-muted text-muted-foreground border border-border rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-border transition">
+                      <History className="h-3.5 w-3.5" /> Ver Histórico
+                    </button>
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition"><X className="h-5 w-5" /></button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Nome *</label>
-                <input value={form.nome || ''} onChange={(e) => updateField('nome', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500" />
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Nome *</label>
+                <input value={form.nome || ''} onChange={(e) => updateField('nome', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Marca</label>
+                <input value={form.marca || ''} onChange={(e) => updateField('marca', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Marca</label>
-                <input value={form.marca || ''} onChange={(e) => updateField('marca', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500" />
-              </div>
-              
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Código</label>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Código de Barras</label>
                 <div className="flex gap-2">
-                  <input value={form.codigo || ''} onChange={(e) => updateField('codigo', e.target.value)}
-                    className="flex-1 h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm font-mono focus:outline-none" />
-                  <button type="button" onClick={() => setScanning(true)} className="h-10 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition flex items-center gap-1" title="Escanear com a câmera">
+                  <input value={form.codigo || ''} onChange={(e) => updateField('codigo', e.target.value)} className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary/40 text-foreground" />
+                  <button type="button" onClick={() => setScanMode('produto')} className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md" title="Escanear com a câmera">
                     <Camera className="h-4 w-4" />
                   </button>
-                  <button onClick={genCode} className="h-10 px-3 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-xs transition">Gerar</button>
+                  <button onClick={genCodeProduto} className="px-4 bg-muted border border-border hover:border-primary/40 rounded-xl text-[10px] font-black uppercase transition text-foreground">Gerar</button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 md:col-span-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Entrada</label>
+                  <input type="date" value={form.data_entrada || ''} onChange={(e) => updateField('data_entrada', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade (Lote Base)</label>
+                  <input type="date" value={form.data_validade || ''} onChange={(e) => updateField('data_validade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
                 </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
-                  <label className="text-xs font-bold text-orange-400 uppercase">Custo</label>
-                  <input type="text" value={formatCurrency(form.custo || 0)} onChange={(e) => updateField('custo', e.target.value)}
-                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-400 font-mono" />
+                <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
+                  <label className="text-[10px] font-black text-orange-500 uppercase">Custo {editing && "(Médio)"}</label>
+                  <input type="text" value={formatCurrency(form.custo || 0)} onChange={(e) => updateField('custo', e.target.value)} disabled={!!editing} className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-500 font-mono font-bold disabled:opacity-70" />
                 </div>
-                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
-                  <label className="text-xs font-bold text-blue-400 uppercase">Margem (%)</label>
-                  <input type="number" step="0.01" value={form.margem || ''} onChange={(e) => updateField('margem', e.target.value)}
-                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-blue-400 font-mono" />
+                <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
+                  <label className="text-[10px] font-black text-blue-500 uppercase">Margem (%)</label>
+                  <input type="number" step="0.01" value={form.margem || ''} onChange={(e) => updateField('margem', e.target.value)} className="w-full bg-transparent border-none p-0 focus:ring-0 text-blue-500 font-mono font-bold" />
                 </div>
-                <div className="p-3 rounded-lg border border-zinc-800 bg-zinc-900/30 space-y-1">
-                  <label className="text-xs font-bold text-green-400 uppercase">Venda</label>
-                  <input type="text" value={formatCurrency(form.preco_venda || 0)} onChange={(e) => updateField('preco_venda', e.target.value)}
-                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-400 font-mono" />
+                <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
+                  <label className="text-[10px] font-black text-green-500 uppercase">Venda</label>
+                  <input type="text" value={formatCurrency(form.preco_venda || 0)} onChange={(e) => updateField('preco_venda', e.target.value)} className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-500 font-mono font-bold" />
                 </div>
               </div>
 
-              <div className="md:col-span-2 grid grid-cols-3 gap-2">
-                <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Lucro/Un</p>
-                  <p className="font-bold text-green-500">{formatCurrency(form.lucro_produto || 0)}</p>
+              <div className="grid grid-cols-2 gap-4 md:col-span-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Categoria</label>
+                  <input list="categorias-list" value={form.categoria || ''} onChange={(e) => updateField('categoria', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" />
+                  <datalist id="categorias-list">
+                    {categoriasExistentes.map(c => <option key={c} value={c} />)}
+                  </datalist>
                 </div>
-                <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Valor Est.</p>
-                  <p className="font-bold text-zinc-300">{formatCurrency(form.valor_estoque || 0)}</p>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
+                  <select value={form.fornecedor || ''} onChange={(e) => updateField('fornecedor', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground">
+                    <option value="">Selecione...</option>
+                    {fornecedores.map(f => <option key={f.nome} value={f.nome}>{f.nome}</option>)}
+                  </select>
                 </div>
-                <div className="p-2 border border-zinc-800 rounded bg-zinc-900 text-center">
-                  <p className="text-[10px] text-zinc-500 uppercase">Lucro Est.</p>
-                  <p className="font-bold text-orange-500">{formatCurrency(form.lucro_estoque || 0)}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 md:col-span-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Atual</label>
+                  <input type="number" value={form.estoque_atual || 0} onChange={(e) => updateField('estoque_atual', Number(e.target.value))} disabled={!!editing} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Unidade</label>
+                  <select value={form.unidade || 'Und'} onChange={(e) => updateField('unidade', e.target.value)} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground">
+                    <option value="Und">Unidade (Und)</option>
+                    <option value="Cx">Caixa (Cx)</option>
+                    <option value="Kg">Quilo (Kg)</option>
+                    <option value="Mt">Metro (Mt)</option>
+                    <option value="Lt">Litro (Lt)</option>
+                  </select>
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Categoria</label>
-                <input list="cats" value={form.categoria || ''} onChange={(e) => updateField('categoria', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none" />
-                <datalist id="cats">
-                  {categoriasExistentes.map(c => <option key={c} value={c} />)}
-                </datalist>
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
+                <input type="number" value={form.estoque_minimo || 0} onChange={(e) => updateField('estoque_minimo', Number(e.target.value))} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground" />
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Fornecedor</label>
-                <input list="forns" value={form.fornecedor || ''} onChange={(e) => updateField('fornecedor', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none" />
-                <datalist id="forns">
-                  {fornecedores.map(f => <option key={f.nome} value={f.nome} />)}
-                </datalist>
+              <div className="flex items-center gap-2 h-full pt-4">
+                <input type="checkbox" checked={form.ativo !== false} onChange={(e) => updateField('ativo', e.target.checked)} className="h-5 w-5 rounded border-border bg-muted accent-primary" />
+                <label className="text-xs font-black uppercase text-foreground">Produto Ativo</label>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Estoque Atual</label>
-                <input type="number" value={form.estoque_atual || ''} onChange={(e) => updateField('estoque_atual', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-zinc-500 uppercase">Unidade</label>
-                <select 
-                  value={form.unidade || 'Und'} 
-                  onChange={(e) => updateField('unidade', e.target.value)}
-                  className="w-full h-10 px-3 rounded-lg border border-zinc-800 bg-zinc-900 text-sm focus:outline-none focus:ring-1 focus:ring-orange-500 appearance-none cursor-pointer"
-                >
-                  <option value="Und">Unidade (Und)</option>
-                  <option value="Pacote">Pacote (Pct)</option>
-                  <option value="m²">Metro Quadrado (m²)</option>
-                  <option value="m">Metro Linear (m)</option>
-                  <option value="litro">Litro (L)</option>
-                  <option value="kg">Quilograma (kg)</option>
-                  <option value="cm">Centímetro (cm)</option>
-                  <option value="cx">Caixa (cx)</option>
-                  <option value="par">Par</option>
-                </select>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Observações Internas</label>
+                <textarea value={form.observacao || ''} onChange={(e) => updateField('observacao', e.target.value)} rows={2} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary/40 text-foreground resize-none" />
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-4 border-t border-zinc-800">
-              <button onClick={() => setShowForm(false)} className="px-4 text-zinc-400 hover:text-white transition">Cancelar</button>
-              <button onClick={handleSave} className="h-10 px-6 bg-orange-500 rounded-lg font-bold flex items-center gap-2 hover:bg-orange-600 transition">
-                <Save className="h-4 w-4" /> Salvar
+            <div className="pt-4 flex gap-3">
+              <button onClick={() => setShowForm(false)} className="flex-1 h-12 rounded-xl border border-border text-xs font-black uppercase hover:bg-muted transition text-foreground">Cancelar</button>
+              <button onClick={handleSave} className="flex-[2] h-12 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:bg-primary/90 transition shadow-lg flex items-center justify-center gap-2">
+                <Save className="h-4 w-4" /> {editing ? 'Salvar Alterações' : 'Finalizar Cadastro'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {scanning && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black p-4">
-          <div className="w-full max-w-md bg-zinc-900 rounded-xl overflow-hidden relative">
-            <div className="p-4 border-b border-zinc-800 flex justify-between items-center">
-              <h3 className="text-white font-bold">Escanear Código</h3>
-              <button onClick={() => setScanning(false)} className="text-zinc-500"><X /></button>
+      {showLoteForm && editing && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
+          <div className="w-full max-w-lg bg-card border border-border rounded-2xl p-6 space-y-6 shadow-2xl animate-in fade-in slide-in-from-bottom-4">
+            <div className="flex justify-between items-center border-b border-border pb-4">
+              <div>
+                <h3 className="text-primary font-black uppercase italic tracking-tighter">Novo Lote</h3>
+                <p className="text-[10px] text-muted-foreground font-bold uppercase">{editing.nome}</p>
+              </div>
+              <button onClick={() => setShowLoteForm(false)} className="text-muted-foreground hover:text-red-500 transition"><X /></button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground">Código de Barras do Lote</label>
+                <div className="flex gap-2">
+                  <input value={loteForm.codigo_barras} onChange={(e) => setLoteForm({...loteForm, codigo_barras: e.target.value})} className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary text-foreground" />
+                  <button type="button" onClick={() => setScanMode('lote')} className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md">
+                    <Camera className="h-4 w-4" />
+                  </button>
+                  <button onClick={genCodeLote} className="px-4 bg-muted border border-border rounded-xl text-[10px] font-black uppercase text-foreground">Gerar</button>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-orange-500">Quantidade Entrada</label>
+                <input type="number" value={loteForm.quantidade} onChange={(e) => setLoteForm({...loteForm, quantidade: Number(e.target.value)})} className="w-full p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl text-xs font-bold outline-none focus:border-orange-500 text-foreground" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-blue-500">Custo Unitário (R$)</label>
+                <input type="text" value={formatCurrency(loteForm.custo)} onChange={(e) => setLoteForm({...loteForm, custo: parseCurrencyToNumber(e.target.value)})} className="w-full p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 text-foreground" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
+                <input type="date" value={loteForm.data_entrada} onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground">Data Validade</label>
+                <input type="date" value={loteForm.data_validade} onChange={(e) => setLoteForm({...loteForm, data_validade: e.target.value})} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground" />
+              </div>
+              <div className="md:col-span-2 space-y-1">
+                <label className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
+                <textarea value={loteForm.observacao} onChange={(e) => setLoteForm({...loteForm, observacao: e.target.value})} rows={2} className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary text-foreground resize-none" />
+              </div>
+            </div>
+
+            <button onClick={handleSaveLote} className="w-full h-12 bg-primary text-primary-foreground rounded-xl font-black uppercase text-xs hover:bg-primary/90 transition shadow-xl flex items-center justify-center gap-2">
+              <Plus className="h-4 w-4" /> Confirmar Novo Lote
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showHistoryModal && editing && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+          <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
+            <div className="p-6 border-b border-border bg-muted/30 flex justify-between items-center">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-primary/10 rounded-xl">
+                  <History className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black uppercase italic text-foreground leading-tight">Histórico de Lotes</h2>
+                  <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">{editing.nome}</p>
+                </div>
+              </div>
+              <button onClick={() => setShowHistoryModal(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
+            </div>
+
+            <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 bg-muted/10 border-b border-border">
+               <div className="p-3 bg-card border border-border rounded-xl">
+                  <p className="text-[9px] font-black uppercase text-muted-foreground">Total Comprado</p>
+                  <p className="text-lg font-mono font-bold">{mDash.totalComprado} {editing.unidade}</p>
+               </div>
+               <div className="p-3 bg-card border border-border rounded-xl">
+                  <p className="text-[9px] font-black uppercase text-muted-foreground">Em Estoque (Lotes)</p>
+                  <p className="text-lg font-mono font-bold text-primary">{mDash.estoqueLotesAtual} {editing.unidade}</p>
+               </div>
+               <div className="p-3 bg-card border border-border rounded-xl">
+                  <p className="text-[9px] font-black uppercase text-red-500">Lotes Vencidos</p>
+                  <p className="text-lg font-mono font-bold text-red-500">{mDash.vencidos}</p>
+               </div>
+               <div className="p-3 bg-card border border-border rounded-xl">
+                  <p className="text-[9px] font-black uppercase text-orange-500">Custo mais Alto</p>
+                  <p className="text-lg font-mono font-bold text-orange-500">{formatCurrency(mDash.custoMaisAlto)}</p>
+               </div>
+            </div>
+
+            <div className="p-4 border-b border-border flex flex-col md:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <input value={historicoBusca} onChange={(e) => setHistoricoBusca(e.target.value)} placeholder="Filtrar por código ou observação..." className="w-full h-10 pl-10 pr-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
+              </div>
+              <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
+            </div>
+
+            <div className="flex-1 overflow-auto p-4">
+              <table className="w-full text-xs text-left">
+                <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
+                  <tr>
+                    <th className="p-3">Código</th>
+                    <th className="p-3 text-center">Entrada</th>
+                    <th className="p-3 text-center">Validade</th>
+                    <th className="p-3 text-right">Custo</th>
+                    <th className="p-3 text-right">Inicial</th>
+                    <th className="p-3 text-right">Saldo</th>
+                    <th className="p-3">Observação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {historicoLotesFiltrados.length === 0 ? (
+                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado.</td></tr>
+                  ) : (
+                    historicoLotesFiltrados.map((l) => {
+                      const lQtdAtual = Number(l.quantidade_atual || l.quantidade);
+                      const isEsgotado = lQtdAtual <= 0;
+                      const isVencido = getDaysDiff(l.data_validade) < 0 && !isEsgotado;
+                      return (
+                        <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
+                          <td className="p-3 font-mono font-bold text-primary">{l.codigo_barras || '-'}</td>
+                          <td className="p-3 text-center">{new Date(l.data_entrada).toLocaleDateString('pt-BR')}</td>
+                          <td className={`p-3 text-center font-bold ${isVencido ? 'text-red-500' : ''}`}>
+                            {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
+                          </td>
+                          <td className="p-3 text-right font-mono">{formatCurrency(l.custo)}</td>
+                          <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
+                          <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
+                          <td className="p-3 text-xs max-w-[200px] truncate" title={l.observacao}>{l.observacao || '-'}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+          </div>
+        </div>
+      )}
+
+      {scanMode && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 p-4">
+          <div className="w-full max-w-md bg-card rounded-2xl overflow-hidden relative border border-border shadow-2xl">
+            <div className="p-4 border-b border-border flex justify-between items-center bg-muted/30">
+              <h3 className="text-foreground font-black uppercase text-xs">Escanear Código ({scanMode === 'produto' ? 'Produto' : 'Lote'})</h3>
+              <button onClick={() => setScanMode(null)} className="text-muted-foreground hover:text-red-500 transition"><X /></button>
             </div>
             <div id="reader" className="w-full"></div>
-            <div className="p-4 text-center text-zinc-500 text-xs">
+            <div className="p-4 text-center text-muted-foreground text-[10px] font-bold uppercase">
               Aponte a câmera para o código de barras
             </div>
           </div>

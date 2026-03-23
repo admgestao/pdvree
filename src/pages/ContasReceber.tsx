@@ -13,7 +13,7 @@ interface Conta {
   id: string;
   descricao: string;
   valor: number;
-  devedor_id: string; // Nome ou ID do devedor
+  devedor_id: string; 
   condicao_pagamento: string;
   categoria: string;
   data_vencimento: string;
@@ -36,9 +36,6 @@ export default function ContasReceber() {
   const [editing, setEditing] = useState<Conta | null>(null);
   const [form, setForm] = useState<Partial<Conta>>(empty);
 
-  // Estados para seleção de devedor
-  const [tipoDevedor, setTipoDevedor] = useState<'cliente' | 'fornecedor' | 'manual'>('manual');
-
   // Estados de Filtro
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('todos');
@@ -47,10 +44,8 @@ export default function ContasReceber() {
 
   // Listas de dados
   const [categoriasSalvas, setCategoriasSalvas] = useState<string[]>([]);
-  const [clientes, setClientes] = useState<{id: string, nome: string}[]>([]);
-  const [fornecedores, setFornecedores] = useState<{id: string, nome: string}[]>([]);
 
-  useEffect(() => { load(); loadPessoas(); }, []);
+  useEffect(() => { load(); }, []);
 
   async function load() {
     setLoading(true);
@@ -63,14 +58,6 @@ export default function ContasReceber() {
     setLoading(false);
   }
 
-  async function loadPessoas() {
-    // Busca clientes e fornecedores da tabela 'pessoas'
-    const { data: clis } = await supabase.from('pessoas').select('id, nome').eq('tipo', 'cliente');
-    const { data: fors } = await supabase.from('pessoas').select('id, nome').eq('tipo', 'fornecedor');
-    setClientes(clis || []);
-    setFornecedores(fors || []);
-  }
-
   const today = new Date();
   today.setHours(0,0,0,0);
 
@@ -78,15 +65,13 @@ export default function ContasReceber() {
     window.print();
   };
 
-  // Lógica de Alerta Visual (Cores conforme proximidade)
   function getVisualStatus(c: Conta) {
     if (c.status === 'recebido') return 'opacity-60 bg-emerald-500/5';
     if (!c.data_vencimento) return '';
     const venc = parseISO(c.data_vencimento);
     const diff = differenceInDays(venc, today);
-
     if (diff < 0) return 'animate-pulse bg-red-500/20 border-red-500 text-red-600 font-bold'; 
-    if (diff === 0) return 'animate-pulse bg-yellow-400/30 border-yellow-500 text-yellow-700 font-bold'; 
+    if (diff === 0) return 'animate-pulse bg-yellow-400/30 border-yellow-500 text-yellow-700 font-bold';
     if (diff > 0 && diff <= 3) return 'bg-orange-100 dark:bg-orange-950/30 text-orange-600'; 
     return '';
   }
@@ -101,7 +86,8 @@ export default function ContasReceber() {
 
     const isVencida = parseISO(c.data_vencimento) < today && c.status === 'receber';
     const matchStatus = filterStatus === 'todos' || 
-                        (filterStatus === 'vencido' ? isVencida : c.status === filterStatus);
+                        (filterStatus === 'vencido' 
+                        ? isVencida : c.status === filterStatus);
     const matchCat = !filterCategoria || c.categoria === filterCategoria;
     const matchDate = (!filterDate.start || (c.data_vencimento >= filterDate.start)) &&
                       (!filterDate.end || (c.data_vencimento <= filterDate.end));
@@ -117,7 +103,7 @@ export default function ContasReceber() {
 
   async function handleSave() {
     if (!form.descricao || !form.valor || !form.devedor_id) { 
-      toast.error('Descrição, Valor e Devedor são obrigatórios'); 
+      toast.error('Descrição, Valor e Devedor são obrigatórios');
       return; 
     }
     const payload = { ...form, valor: Number(form.valor) };
@@ -262,33 +248,10 @@ export default function ContasReceber() {
                 <input value={form.descricao} onChange={e => setForm({...form, descricao: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
-              <div className="md:col-span-2 space-y-3 p-4 bg-muted/30 rounded-2xl border border-border">
-                <label className="text-[10px] font-black text-muted-foreground uppercase">Origem do Devedor</label>
-                <div className="flex gap-4">
-                  {(['cliente', 'fornecedor', 'manual'] as const).map((t) => (
-                    <label key={t} className="flex items-center gap-2 cursor-pointer group">
-                      <input type="radio" checked={tipoDevedor === t} onChange={() => { setTipoDevedor(t); setForm({...form, devedor_id: ''}); }} className="accent-primary" />
-                      <span className="text-[10px] font-bold uppercase text-muted-foreground group-hover:text-foreground transition-colors">{t}</span>
-                    </label>
-                  ))}
-                </div>
-
-                {tipoDevedor === 'manual' ? (
-                  <input placeholder="Digite o nome do devedor..." value={form.devedor_id} onChange={e => setForm({...form, devedor_id: e.target.value})}
-                    className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none" />
-                ) : (
-                  <div className="relative">
-                    <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-                    <input list="lista-pessoas" placeholder={`Buscar ${tipoDevedor}...`} value={form.devedor_id || ''} onChange={e => setForm({...form, devedor_id: e.target.value})}
-                      className="w-full bg-secondary border border-border rounded-xl py-2 pl-10 pr-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
-                    <datalist id="lista-pessoas">
-                      {tipoDevedor === 'cliente' 
-                        ? clientes.map(p => <option key={p.id} value={p.nome} />)
-                        : fornecedores.map(p => <option key={p.id} value={p.nome} />)
-                      }
-                    </datalist>
-                  </div>
-                )}
+              <div className="md:col-span-2">
+                <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Devedor</label>
+                <input placeholder="Digite o nome do devedor..." value={form.devedor_id} onChange={e => setForm({...form, devedor_id: e.target.value})}
+                    className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
               <div>

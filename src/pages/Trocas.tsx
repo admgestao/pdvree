@@ -40,7 +40,7 @@ export default function GestaoOperacionalTrocas() {
   const [vendedorSelecionado, setVendedorSelecionado] = useState('');
   
   const [motivo, setMotivo] = useState('');
-
+  
   // Estados de Dados e Filtros
   const [historico, setHistorico] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -69,7 +69,6 @@ export default function GestaoOperacionalTrocas() {
       .from('movimentacoes_estoque')
       .select('*')
       .order('data_registro', { ascending: false });
-    
     if (data) setHistorico(data);
     setLoading(false);
   }
@@ -112,7 +111,7 @@ export default function GestaoOperacionalTrocas() {
       const dataReg = new Date(g.data_registro).getTime();
       const matchData = (!filtroDataInicio || dataReg >= new Date(filtroDataInicio).getTime()) &&
                         (!filtroDataFim || dataReg <= new Date(filtroDataFim).getTime());
-
+      
       return matchTexto && matchTipo && matchCondicao && matchData;
     });
 
@@ -120,7 +119,7 @@ export default function GestaoOperacionalTrocas() {
       ? a.valor_total_agrupado - b.valor_total_agrupado 
       : b.valor_total_agrupado - a.valor_total_agrupado
     );
-
+    
     return lista;
   }, [historico, filtroTexto, filtroTipo, filtroCondicao, filtroDataInicio, filtroDataFim, ordemCrescente]);
 
@@ -189,7 +188,6 @@ export default function GestaoOperacionalTrocas() {
     if (tiposSelecionados.length === 0) return toast.error("Selecione o tipo da operação");
     setLoading(true);
     const operacao_id = crypto.randomUUID();
-    
     try {
       const payload = itens.map(item => ({
         id_operacao: operacao_id,
@@ -204,7 +202,6 @@ export default function GestaoOperacionalTrocas() {
         condicao_produto: condicaoGeral,
         motivo: motivo
       }));
-
       const { error } = await supabase.from('movimentacoes_estoque').insert(payload);
       if (error) throw error;
 
@@ -397,7 +394,7 @@ export default function GestaoOperacionalTrocas() {
                   ))}
                 </tbody>
               </table>
-            </div>
+             </div>
           </div>
         </div>
       )}
@@ -424,7 +421,7 @@ export default function GestaoOperacionalTrocas() {
                   { id: 'is_devolucao', label: 'Devolução' },
                   { id: 'is_estorno', label: 'Estorno' }
                 ].map((t) => (
-                  <button 
+                   <button 
                     key={t.id} onClick={() => setTiposSelecionados(prev => prev.includes(t.id) ? prev.filter(i => i !== t.id) : [...prev, t.id])} 
                     className={`py-3 rounded-xl text-[10px] font-black uppercase border-2 transition-all ${tiposSelecionados.includes(t.id) ? 'bg-primary border-primary text-primary-foreground shadow-[0_0_15px_rgba(var(--primary),0.3)]' : 'bg-muted/30 border-border text-muted-foreground'}`}
                   >
@@ -433,7 +430,7 @@ export default function GestaoOperacionalTrocas() {
                 ))}
               </div>
 
-              {/* VENDEDOR, CLIENTE E CONDIÇÃO (TEMA APLICADO) */}
+               {/* VENDEDOR, CLIENTE E CONDIÇÃO */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="space-y-1">
                   <label className="text-[9px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Vendedor</label>
@@ -447,24 +444,24 @@ export default function GestaoOperacionalTrocas() {
                       <option className="bg-card text-foreground" key={v.nome_usuario} value={v.nome_usuario}>{v.nome_usuario}</option>
                     ))}
                   </select>
-                </div>
+                 </div>
                 <div className="space-y-1 relative">
                   <label className="text-[9px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Cliente</label>
                   <input className="w-full p-3 bg-muted/30 border-2 border-border rounded-xl text-[10px] font-black uppercase outline-none focus:border-primary/40 text-foreground" placeholder="Nome..." value={clienteNome} onChange={(e) => buscarClientes(e.target.value)} />
-                  {clientesSugestao.length > 0 && (
+                   {clientesSugestao.length > 0 && (
                     <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-xl">
                       {clientesSugestao.map(c => (
                         <button key={c.nome} onClick={() => { setClienteNome(c.nome); setClientesSugestao([]); }} className="w-full px-4 py-2 text-left hover:bg-primary/10 font-bold text-[10px] uppercase border-b last:border-0 border-border text-foreground">
                           {c.nome}
                         </button>
                       ))}
-                    </div>
+                     </div>
                   )}
                 </div>
                 <div className="space-y-1">
                   <label className="text-[9px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Destino</label>
                   <select 
-                    className="w-full p-3 bg-muted/30 border-2 border-border rounded-xl text-[10px] font-black uppercase outline-none focus:border-primary/40 text-primary font-black transition-all appearance-none" 
+                     className="w-full p-3 bg-muted/30 border-2 border-border rounded-xl text-[10px] font-black uppercase outline-none focus:border-primary/40 text-primary font-black transition-all appearance-none" 
                     value={condicaoGeral} 
                     onChange={(e: any) => setCondicaoGeral(e.target.value)}
                   >
@@ -474,7 +471,7 @@ export default function GestaoOperacionalTrocas() {
                 </div>
               </div>
 
-              {/* BUSCA PRODUTO */}
+               {/* BUSCA PRODUTO */}
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -482,7 +479,7 @@ export default function GestaoOperacionalTrocas() {
                   {produtosSugestao.length > 0 && (
                     <div className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-xl overflow-hidden">
                       {produtosSugestao.map(p => (
-                        <button key={p.codigo} onClick={() => adicionarItem(p)} className="w-full px-4 py-3 text-left hover:bg-primary/10 border-b border-border last:border-0 font-black text-[10px] uppercase text-foreground">
+                         <button key={p.codigo} onClick={() => adicionarItem(p)} className="w-full px-4 py-3 text-left hover:bg-primary/10 border-b border-border last:border-0 font-black text-[10px] uppercase text-foreground">
                           {p.nome} <span className="text-primary ml-2">{formatarMoeda(p.preco_venda)}</span>
                         </button>
                       ))}
@@ -490,14 +487,14 @@ export default function GestaoOperacionalTrocas() {
                   )}
                 </div>
                 <button onClick={() => adicionarItem()} className="px-4 bg-muted border-2 border-border rounded-xl text-[10px] font-black uppercase hover:border-primary/40 transition-all flex items-center gap-1 text-foreground">
-                  <Plus size={14} /> Manual
+                   <Plus size={14} /> Manual
                 </button>
               </div>
 
               {/* LISTA DE ITENS */}
               <div className="space-y-2">
                 {itens.map((item) => (
-                  <div key={item.id_temp} className="p-3 bg-muted/20 rounded-xl border-l-4 border-l-primary border border-border">
+                   <div key={item.id_temp} className="p-3 bg-muted/20 rounded-xl border-l-4 border-l-primary border border-border">
                     <div className="grid grid-cols-12 gap-3 items-center">
                       <div className="col-span-6">
                         <input className="w-full bg-transparent border-none p-0 text-[10px] font-black uppercase outline-none text-foreground" value={item.nome} onChange={(e) => setItens(itens.map(i => i.id_temp === item.id_temp ? {...i, nome: e.target.value} : i))} placeholder="Nome..." />
@@ -517,7 +514,7 @@ export default function GestaoOperacionalTrocas() {
                     </div>
                   </div>
                 ))}
-              </div>
+               </div>
 
               <textarea className="w-full p-4 bg-muted/30 border-2 border-border rounded-xl text-[10px] h-20 resize-none outline-none focus:border-primary/40 font-bold uppercase text-foreground" placeholder="Motivo da operação..." value={motivo} onChange={e => setMotivo(e.target.value)} />
             </div>
@@ -550,12 +547,12 @@ export default function GestaoOperacionalTrocas() {
             
             <div className="p-6 space-y-6">
               <div className="grid grid-cols-3 gap-4">
-                <div className="p-3 bg-muted/50 rounded-2xl border border-border">
+                 <div className="p-3 bg-muted/50 rounded-2xl border border-border">
                   <p className="text-[8px] font-black uppercase opacity-50">Cliente</p>
                   <p className="text-[10px] font-black uppercase text-foreground">{showDetalhes.cliente_nome}</p>
                 </div>
                 <div className="p-3 bg-muted/50 rounded-2xl border border-border">
-                  <p className="text-[8px] font-black uppercase opacity-50">Vendedor</p>
+                   <p className="text-[8px] font-black uppercase opacity-50">Vendedor</p>
                   <p className="text-[10px] font-black uppercase text-foreground">{showDetalhes.vendedor_nome}</p>
                 </div>
                 <div className="p-3 bg-muted/50 rounded-2xl border border-border">
@@ -597,7 +594,7 @@ export default function GestaoOperacionalTrocas() {
               </div>
 
               <div className="p-4 bg-primary/5 rounded-2xl border border-primary/10">
-                <p className="text-[8px] font-black uppercase text-primary mb-1">Observações</p>
+                 <p className="text-[8px] font-black uppercase text-primary mb-1">Observações</p>
                 <p className="text-[10px] italic font-medium uppercase leading-relaxed text-muted-foreground">{showDetalhes.motivo || "Sem observações."}</p>
               </div>
             </div>
