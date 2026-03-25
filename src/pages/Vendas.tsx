@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, X, Eye, Printer, List, Package, Briefcase, TrendingUp, DollarSign, PieChart } from 'lucide-react';
+import { Search, X, Eye, Printer, List, Package, Briefcase, TrendingUp, DollarSign, PieChart, FileText, Zap } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { ValueDisplay } from '@/components/ValueDisplay';
 import { useVisibility } from '@/contexts/VisibilityContext';
@@ -53,6 +53,9 @@ export default function Vendas() {
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null);
   const [itensDetalhe, setItensDetalhe] = useState<VendaItem[]>([]);
   const [dadosEmpresa, setDadosEmpresa] = useState<any>(null);
+  
+  // Estado para o novo modal de seleção de impressora
+  const [printSelection, setPrintSelection] = useState<{venda: Venda, itens: VendaItem[], tipo: 'comum' | 'admin'} | null>(null);
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
@@ -70,7 +73,6 @@ export default function Vendas() {
   async function load() {
     setLoading(true);
     try {
-      // Busca dados da empresa para o cabeçalho das impressões
       const { data: emp } = await supabase.from('empresa').select('*').limit(1).single();
       setDadosEmpresa(emp);
 
@@ -87,7 +89,6 @@ export default function Vendas() {
       }
 
       const idsVendas = vendasData.map((v: any) => v.id);
-      // Busca tudo em paralelo para otimizar
       const [resClientes, resFormas, resItens] = await Promise.all([
         supabase.from('pessoas').select('id, nome'),
         supabase.from('formas_pagamento').select('id, nome'),
@@ -100,7 +101,6 @@ export default function Vendas() {
       let produtosData: any[] = [];
       let lotesData: any[] = [];
 
-      // Busca os custos reais nos dois bancos de dados de produtos
       if (produtoIds.length > 0) {
         const [resProdutos, resLotes] = await Promise.all([
           supabase.from('produtos').select('id, custo').in('id', produtoIds),
@@ -110,11 +110,8 @@ export default function Vendas() {
         lotesData = resLotes.data || [];
       }
 
-      // 1. Mapeia e calcula o custo dinâmico para CADA item vendido
       const mappedItens = itensData.map(item => {
         let custoUn = 0;
-        
-        // Verifica se é lote pela regex
         const loteMatch = item.produto_nome?.match(/\(Lote:\s*(.*?)\)/);
         
         if (loteMatch && loteMatch[1]) {
@@ -124,12 +121,10 @@ export default function Vendas() {
           if (lote && lote.custo !== undefined && lote.custo !== null) {
             custoUn = Number(lote.custo);
           } else {
-            // Fallback para o custo do produto
             const prod = produtosData.find(p => p.id === item.produto_id);
             custoUn = prod && prod.custo !== undefined ? Number(prod.custo) : 0;
           }
         } else {
-          // Se não for lote, pega do produto normal
           const prod = produtosData.find(p => p.id === item.produto_id);
           custoUn = prod && prod.custo !== undefined ? Number(prod.custo) : 0;
         }
@@ -139,18 +134,13 @@ export default function Vendas() {
           ...item, 
           criado_em: vendaPai?.criado_em,
           vendedor_nome: vendaPai?.vendedor_nome,
-          produtos: { preco_custo: custoUn } // Armazena o custo calculado na mesma estrutura
+          produtos: { preco_custo: custoUn }
         };
       });
 
-      // 2. Mapeia as vendas aplicando a soma dos custos calculados
       const mappedVendas = vendasData.map((v: any) => {
         const itensDestaVenda = mappedItens.filter(i => i.venda_id === v.id);
-        
-        // Soma o custo (Custo unitário real * Quantidade vendida)
         const totalCustoCalculado = itensDestaVenda.reduce((acc, curr) => acc + (curr.produtos.preco_custo * curr.quantidade), 0);
-        
-        // Recalcula o lucro líquido baseando-se no custo dinâmico e na marcação de custo no lucro
         const valorCustoAdicional = Number(v.custo_adicional) || 0;
         const lucroCalculado = Number(v.total) - totalCustoCalculado - (v.custo_no_lucro ? 0 : valorCustoAdicional);
 
@@ -172,43 +162,138 @@ export default function Vendas() {
     }
   }
 
-  // Como já calculamos tudo na função load(), abrir o detalhe fica instantâneo!
   async function openDetail(v: Venda) {
     setSelectedVenda(v);
     const itens = todosItens.filter(i => i.venda_id === v.id);
     setItensDetalhe(itens);
   }
 
-  function imprimirVenda(venda: Venda, itens: VendaItem[]) {
+  // NOVA LÓGICA DE IMPRESSÃO DIVIDIDA
+  function imprimirA4(venda: Venda, itens: VendaItem[]) {
     const win = window.open('', '_blank');
     if (!win) return;
 
-    const cabecalhoEmpresa = dadosEmpresa ? `
-      <div style="text-align: center; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px;">
-        <h1 style="margin: 0; font-size: 18px;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h1>
-        <p style="margin: 2px 0; font-size: 12px;">${dadosEmpresa.endereco}, ${dadosEmpresa.numero} - ${dadosEmpresa.bairro}</p>
-        <p style="margin: 2px 0; font-size: 12px;">${dadosEmpresa.cidade} - ${dadosEmpresa.contato}</p>
-        ${dadosEmpresa.cnpj ? `<p style="margin: 2px 0; font-size: 12px;">CNPJ: ${dadosEmpresa.cnpj}</p>` : ''}
+    const cabecalho = dadosEmpresa ? `
+      <div style="text-align: center; margin-bottom: 20px; border-bottom: 2px solid #000; padding-bottom: 10px;">
+        <h1 style="margin: 0; font-size: 22px; text-transform: uppercase;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h1>
+        <p style="margin: 4px 0; font-size: 14px;">${dadosEmpresa.endereco}, ${dadosEmpresa.numero} - ${dadosEmpresa.bairro} - ${dadosEmpresa.cidade}</p>
+        <p style="margin: 4px 0; font-size: 14px;">CNPJ: ${dadosEmpresa.cnpj || '---'} | Contato: ${dadosEmpresa.contato}</p>
       </div>
     ` : '';
 
     win.document.write(`
       <html>
-        <head><title>Venda</title><style>body { font-family: sans-serif; padding:20px } .linha { display:flex; justify-content:space-between; margin-bottom:5px } .obs { font-size: 12px; margin-top: 10px; border-top: 1px solid #ccc; padding-top: 5px; }</style></head>
+        <head>
+          <title>Comprovante A4 - ${venda.id}</title>
+          <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; color: #333; }
+            .info-venda { display: flex; justify-content: space-between; margin-bottom: 20px; font-size: 14px; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th { background: #f4f4f4; text-align: left; padding: 12px; border-bottom: 2px solid #ddd; }
+            td { padding: 12px; border-bottom: 1px solid #eee; }
+            .totais { margin-left: auto; width: 300px; margin-top: 20px; }
+            .total-linha { display: flex; justify-content: space-between; padding: 5px 0; font-size: 14px; }
+            .total-final { font-size: 20px; font-weight: bold; border-top: 2px solid #333; margin-top: 10px; padding-top: 10px; }
+            @media print { body { padding: 0; } }
+          </style>
+        </head>
         <body>
-          ${cabecalhoEmpresa}
-          <h2 style="text-align: center;">Comprovante de Venda</h2>
-          <p><b>Data:</b> ${formatDate(venda.criado_em)}</p>
-          <p><b>Vendedor:</b> ${venda.vendedor_nome || '-'}</p>
-          <p><b>Cliente:</b> ${venda.cliente_nome}</p>
-          <hr/>
-          ${itens.map(i => `<div class="linha"><span>${i.produto_nome} x${i.quantidade}</span><span>${formatCurrency(i.total)}</span></div>`).join('')}
-          <hr/>
-          ${venda.desconto > 0 ? `<div class="linha"><span>Desconto:</span><span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
-          ${venda.custo_adicional > 0 ? `<div class="linha"><span>${venda.desc_custo_adicional || 'Adicional'}:</span><span>+ ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
-          <hr/>
-          <h3 style="text-align: right;">Total: ${formatCurrency(venda.total)}</h3>
-          ${venda.observacao ? `<div class="obs"><b>Obs:</b> ${venda.observacao}</div>` : ''}
+          ${cabecalho}
+          <h2 style="text-align: center; text-decoration: underline;">COMPROVANTE DE VENDA</h2>
+          <div class="info-venda">
+            <div>
+              <p><b>CLIENTE:</b> ${venda.cliente_nome}</p>
+              <p><b>VENDEDOR:</b> ${venda.vendedor_nome || '-'}</p>
+            </div>
+            <div style="text-align: right;">
+              <p><b>DATA:</b> ${formatDate(venda.criado_em)}</p>
+              <p><b>PAGAMENTO:</b> ${venda.forma_nome}</p>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>PRODUTO</th>
+                <th style="text-align: center;">QTD</th>
+                <th style="text-align: right;">UNITÁRIO</th>
+                <th style="text-align: right;">SUBTOTAL</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itens.map(i => `
+                <tr>
+                  <td>${i.produto_nome}</td>
+                  <td style="text-align: center;">${i.quantidade}</td>
+                  <td style="text-align: right;">${formatCurrency(i.preco)}</td>
+                  <td style="text-align: right;">${formatCurrency(i.total)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div class="totais">
+            <div class="total-linha"><span>Subtotal:</span> <span>${formatCurrency(venda.subtotal)}</span></div>
+            ${venda.desconto > 0 ? `<div class="total-linha" style="color: red;"><span>Desconto:</span> <span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
+            ${venda.custo_adicional > 0 ? `<div class="total-linha"><span>${venda.desc_custo_adicional || 'Adicional'}:</span> <span>+ ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
+            <div class="total-linha total-final"><span>TOTAL:</span> <span>${formatCurrency(venda.total)}</span></div>
+          </div>
+          ${venda.observacao ? `<div style="margin-top: 30px; padding: 10px; border: 1px solid #ccc;"><b>Observações:</b><br/>${venda.observacao}</div>` : ''}
+          <div style="margin-top: 50px; text-align: center; font-size: 12px; color: #999;">Obrigado pela preferência!</div>
+        </body>
+      </html>
+    `);
+    win.document.close();
+    win.print();
+  }
+
+  function imprimirTermica(venda: Venda, itens: VendaItem[]) {
+    const win = window.open('', '_blank');
+    if (!win) return;
+
+    const cabecalho = dadosEmpresa ? `
+      <div style="text-align: center; margin-bottom: 10px;">
+        <h3 style="margin: 0; font-size: 16px;">${dadosEmpresa.nome_fantasia || dadosEmpresa.razao_social}</h3>
+        <p style="margin: 2px 0; font-size: 11px;">${dadosEmpresa.endereco}, ${dadosEmpresa.numero}</p>
+        <p style="margin: 2px 0; font-size: 11px;">CNPJ: ${dadosEmpresa.cnpj || '---'}</p>
+        <p style="margin: 2px 0; font-size: 11px;">Fone: ${dadosEmpresa.contato}</p>
+      </div>
+    ` : '';
+
+    win.document.write(`
+      <html>
+        <head>
+          <title>Cupom Térmico</title>
+          <style>
+            body { font-family: 'Courier New', Courier, monospace; width: 280px; padding: 5px; font-size: 12px; }
+            .divisoria { border-top: 1px dashed #000; margin: 10px 0; }
+            .item { display: flex; justify-content: space-between; margin-bottom: 5px; }
+            .item-detalhe { font-size: 10px; margin-bottom: 8px; }
+            .total { font-weight: bold; font-size: 14px; display: flex; justify-content: space-between; }
+            @media print { body { width: 100%; padding: 0; } }
+          </style>
+        </head>
+        <body>
+          ${cabecalho}
+          <div class="divisoria"></div>
+          <div style="text-align: center; font-weight: bold; margin-bottom: 10px;">CUPOM NÃO FISCAL</div>
+          <p>Data: ${formatDate(venda.criado_em)}</p>
+          <p>Cliente: ${venda.cliente_nome}</p>
+          <p>Vend: ${venda.vendedor_nome || '-'}</p>
+          <div class="divisoria"></div>
+          <div style="font-weight: bold; margin-bottom: 5px;">PRODUTOS</div>
+          ${itens.map(i => `
+            <div class="item">
+              <span>${i.produto_nome.substring(0, 20)}</span>
+              <span>${formatCurrency(i.total)}</span>
+            </div>
+            <div class="item-detalhe">${i.quantidade} un x ${formatCurrency(i.preco)}</div>
+          `).join('')}
+          <div class="divisoria"></div>
+          <div class="item"><span>Subtotal:</span> <span>${formatCurrency(venda.subtotal)}</span></div>
+          ${venda.desconto > 0 ? `<div class="item"><span>Desc:</span> <span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
+          ${venda.custo_adicional > 0 ? `<div class="item"><span>Add:</span> <span>+ ${formatCurrency(venda.custo_adicional)}</span></div>` : ''}
+          <div class="total"><span>TOTAL:</span> <span>${formatCurrency(venda.total)}</span></div>
+          <div class="divisoria"></div>
+          <p style="text-align: center; font-size: 10px;">VOLTE SEMPRE!</p>
         </body>
       </html>
     `);
@@ -259,7 +344,6 @@ export default function Vendas() {
             <p><b>Cliente:</b> ${venda.cliente_nome}</p>
             <p><b>Pagamento:</b> ${venda.forma_nome}</p>
           </div>
-          
           <table>
             <thead>
               <tr>
@@ -290,7 +374,6 @@ export default function Vendas() {
             </tbody>
           </table>
           <p style="font-size: 10px; color: #666;">* O custo unitário reflete o custo base atual do produto/lote cadastrado no sistema.</p>
-
           <div class="resumo">
             <div><span>Subtotal (Bruto):</span> <span>${formatCurrency(venda.subtotal)}</span></div>
             ${venda.desconto > 0 ? `<div style="color: #dc2626;"><span>Descontos:</span> <span>- ${formatCurrency(venda.desconto)}</span></div>` : ''}
@@ -316,11 +399,13 @@ export default function Vendas() {
     v.vendedor_nome?.toLowerCase().includes(searchLower) ||
     v.id.toLowerCase().includes(searchLower)
   );
+
   const filteredItens = todosItens.filter((i) => 
     i.produto_nome?.toLowerCase().includes(searchLower) ||
     i.vendedor_nome?.toLowerCase().includes(searchLower) ||
     i.venda_id.toLowerCase().includes(searchLower)
   );
+
   const totalGeral = activeTab === 'itens' 
     ? filteredItens.reduce((s, i) => s + (Number(i.total) || 0), 0)
     : filteredVendas.reduce((s, v) => s + (Number(v.total) || 0), 0);
@@ -328,7 +413,6 @@ export default function Vendas() {
   const adminTotalReceita = filteredVendas.reduce((s, v) => s + (Number(v.total) || 0), 0);
   const adminTotalCusto = filteredVendas.reduce((s, v) => s + (Number(v.total_custo) || 0), 0);
   const adminTotalLucro = filteredVendas.reduce((s, v) => s + (Number(v.lucro_liquido) || 0), 0);
-  // Soma apenas os custos que abatem do lucro para o indicador do topo
   const adminCustosAdd = filteredVendas.reduce((s, v) => s + (v.custo_no_lucro ? 0 : (Number(v.custo_adicional) || 0)), 0);
   const adminMargemOperacional = adminTotalReceita > 0 ? (adminTotalLucro / adminTotalReceita) * 100 : 0;
 
@@ -481,7 +565,7 @@ export default function Vendas() {
             </div>
             <div className="flex items-end justify-between">
                <p className="text-2xl font-mono font-bold text-green-500">{formatCurrency(adminTotalLucro)}</p>
-              {adminCustosAdd > 0 && <span className="text-[10px] text-muted-foreground mb-1">(-${formatCurrency(adminCustosAdd)} extras)</span>}
+               {adminCustosAdd > 0 && <span className="text-[10px] text-muted-foreground mb-1">(-${formatCurrency(adminCustosAdd)} extras)</span>}
             </div>
           </div>
           <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
@@ -523,7 +607,6 @@ export default function Vendas() {
             <thead>
               <tr className="bg-secondary/50 border-b border-border">
                 <th className="p-3 text-left whitespace-nowrap">Data</th>
-                
                 {activeTab === 'vendas' && (
                   <>
                     <th className="p-3 text-left whitespace-nowrap">Vendedor(a)</th>
@@ -532,7 +615,6 @@ export default function Vendas() {
                     <th className="p-3 text-right">Total</th>
                   </>
                 )}
-
                 {activeTab === 'admin' && (
                   <>
                     <th className="p-3 text-left whitespace-nowrap">Vendedor(a)</th>
@@ -543,7 +625,6 @@ export default function Vendas() {
                     <th className="p-3 text-center">Margem</th>
                   </>
                 )}
-                
                 {activeTab === 'itens' && (
                   <>
                     <th className="p-3 text-left min-w-[200px]">Produto</th>
@@ -614,7 +695,12 @@ export default function Vendas() {
                             <button onClick={(e) => { e.stopPropagation(); openDetail(item); }} className="p-1.5 rounded hover:bg-accent"><Eye size={16}/></button>
                             <button onClick={(e) => { 
                               e.stopPropagation(); 
-                              activeTab === 'admin' ? imprimirVendaAdmin(item, todosItens.filter(i => i.venda_id === item.id)) : imprimirVenda(item, todosItens.filter(i => i.venda_id === item.id)); 
+                              const its = todosItens.filter(i => i.venda_id === item.id);
+                              if (activeTab === 'admin') {
+                                imprimirVendaAdmin(item, its);
+                              } else {
+                                setPrintSelection({ venda: item, itens: its, tipo: 'comum' });
+                              }
                             }} className="p-1.5 rounded hover:bg-accent"><Printer size={16}/></button>
                           </>
                         ) : (
@@ -633,6 +719,44 @@ export default function Vendas() {
           </table>
         </div>
       </div>
+
+      {/* MODAL DE SELEÇÃO DE IMPRESSÃO */}
+      {printSelection && (
+        <div className="fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-md z-[100] p-4">
+          <div className="bg-card border border-border p-6 rounded-2xl w-full max-w-sm shadow-2xl animate-in zoom-in-95">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="font-bold text-lg flex items-center gap-2">
+                <Printer size={20} className="text-primary"/> Escolha o Formato
+              </h2>
+              <button onClick={() => setPrintSelection(null)} className="p-1 hover:bg-accent rounded-full"><X /></button>
+            </div>
+            
+            <div className="grid gap-3">
+              <button 
+                onClick={() => { imprimirA4(printSelection.venda, printSelection.itens); setPrintSelection(null); }}
+                className="flex flex-col items-center justify-center gap-3 p-6 rounded-xl border-2 border-border hover:border-primary hover:bg-primary/5 transition-all group"
+              >
+                <FileText size={40} className="text-muted-foreground group-hover:text-primary" />
+                <div className="text-center">
+                  <span className="block font-bold">Papel A4</span>
+                  <span className="text-[10px] text-muted-foreground uppercase">Impressora Convencional</span>
+                </div>
+              </button>
+
+              <button 
+                onClick={() => { imprimirTermica(printSelection.venda, printSelection.itens); setPrintSelection(null); }}
+                className="flex flex-col items-center justify-center gap-3 p-6 rounded-xl border-2 border-border hover:border-orange-500 hover:bg-orange-500/5 transition-all group"
+              >
+                <Zap size={40} className="text-muted-foreground group-hover:text-orange-500" />
+                <div className="text-center">
+                  <span className="block font-bold">Papel Térmico</span>
+                  <span className="text-[10px] text-muted-foreground uppercase">Impressora de Cupom (80mm)</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {selectedVenda && (
         <div className="fixed inset-0 flex items-center justify-center bg-black/60 backdrop-blur-sm z-50 p-4">
@@ -731,7 +855,13 @@ export default function Vendas() {
             )}
 
             <button 
-              onClick={() => isAdminTab ? imprimirVendaAdmin(selectedVenda, itensDetalhe) : imprimirVenda(selectedVenda, itensDetalhe)}
+              onClick={() => {
+                if (isAdminTab) {
+                  imprimirVendaAdmin(selectedVenda, itensDetalhe);
+                } else {
+                  setPrintSelection({ venda: selectedVenda, itens: itensDetalhe, tipo: 'comum' });
+                }
+              }}
               className={`w-full font-bold py-3 rounded-xl flex items-center justify-center gap-2 hover:opacity-90 transition-all text-white ${isAdminTab ? 'bg-blue-600' : 'bg-primary'}`}
             >
               <Printer size={18}/> {isAdminTab ? 'IMPRIMIR COMPROVANTE INTERNO' : 'IMPRIMIR COMPROVANTE'}
