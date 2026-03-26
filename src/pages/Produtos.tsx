@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Package, Plus, Search, Pencil, Trash2, X, Save, Camera, Printer, Filter, DollarSign, BarChart3, TrendingUp, Boxes, AlertTriangle, Calendar, ArrowRightLeft, History, Activity } from 'lucide-react';
+import { Package, Plus, Search, Pencil, Trash2, X, Save, Camera, Printer, Filter, DollarSign, BarChart3, TrendingUp, Boxes, AlertTriangle, Calendar, ArrowRightLeft, History, Activity, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase, logAction } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from 'sonner';
@@ -63,10 +63,8 @@ export default function Produtos() {
   const [loteEditId, setLoteEditId] = useState<string | null>(null);
 
   const [showHistoryModal, setShowHistoryModal] = useState(false);
-  
   const [showCodigoConflito, setShowCodigoConflito] = useState(false);
   const [codigoConflitoData, setCodigoConflitoData] = useState<{produto: Produto, lotes: any[]} | null>(null);
-
   const [editing, setEditing] = useState<Produto | null>(null);
   const [form, setForm] = useState<Partial<Produto>>(emptyProduct);
   const [loteForm, setLoteForm] = useState({ 
@@ -77,7 +75,6 @@ export default function Produtos() {
     observacao: '',
     codigo_barras: ''
   });
-
   const [fornecedores, setFornecedores] = useState<{ nome: string }[]>([]);
   const [categoriasExistentes, setCategoriasExistentes] = useState<string[]>([]);
   
@@ -85,14 +82,20 @@ export default function Produtos() {
   
   const [maxEstoqueFilter, setMaxEstoqueFilter] = useState<number>(999);
   const [filtroValidade, setFiltroValidade] = useState('');
-
+  const [filtroCategoria, setFiltroCategoria] = useState('');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  
   // Filtros Histórico
   const [historicoBusca, setHistoricoBusca] = useState('');
   const [historicoFiltroData, setHistoricoFiltroData] = useState('');
+  const [historicoSortOption, setHistoricoSortOption] = useState<'registro_desc' | 'registro_asc' | 'validade_asc' | 'validade_desc' | 'saldo_desc' | 'saldo_asc'>('registro_desc');
 
   const [activeTab, setActiveTab] = useState<'todos' | 'estoque_baixo' | 'sem_estoque' | 'vencidos'>('todos');
 
-  // ALTERAÇÃO 3: Função helper para conversão segura para maiúsculas
+  // Função helper para conversão segura para maiúsculas
   function toUpperSafe(value: any): any {
     if (typeof value === 'string') return value.toUpperCase();
     return value;
@@ -117,13 +120,14 @@ export default function Produtos() {
           verificarCodigo(decodedText);
         } else if (scanMode === 'lote') {
           setLoteForm(prev => ({ ...prev, codigo_barras: decodedText }));
-          // ALTERAÇÃO 2: Verificação também no scanner de lote
           verificarCodigoLote(decodedText);
         }
         setScanMode(null);
         scanner?.clear();
+        
         toast.success("Código lido com sucesso!");
-      }, (error) => {});
+      }, 
+      (error) => {});
     }
     return () => {
       if (scanner) {
@@ -131,6 +135,10 @@ export default function Produtos() {
       }
     };
   }, [scanMode]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, filtroValidade, maxEstoqueFilter, activeTab, filtroCategoria, sortOrder]);
 
   async function load() {
     setLoading(true);
@@ -141,7 +149,6 @@ export default function Produtos() {
       const lotesDoProduto = (lData || []).filter((l: any) => l.produto_id === p.id);
       return { ...p, lotes: lotesDoProduto };
     });
-
     setProdutos(produtosComLotes);
     
     if (editing) {
@@ -219,6 +226,7 @@ export default function Produtos() {
     
     const matchesEstoque = p.estoque_atual <= maxEstoqueFilter;
     const matchesValidade = filtroValidade ? p.data_validade === filtroValidade : true;
+    const matchesCategoria = filtroCategoria ? p.categoria === filtroCategoria : true;
     const statusValidade = getStatusValidade(p);
 
     let matchesTab = true;
@@ -226,9 +234,16 @@ export default function Produtos() {
     if (activeTab === 'sem_estoque') matchesTab = p.estoque_atual <= 0;
     if (activeTab === 'vencidos') matchesTab = statusValidade.status === 'vencido';
 
-    return matchesSearch && matchesEstoque && matchesValidade && matchesTab;
+    return matchesSearch && matchesEstoque && matchesValidade && matchesTab && matchesCategoria;
+  }).sort((a, b) => {
+    const dateA = new Date(a.criado_em || a.data_entrada || '2000-01-01').getTime();
+    const dateB = new Date(b.criado_em || b.data_entrada || '2000-01-01').getTime();
+    if (dateA === dateB) return a.nome.localeCompare(b.nome);
+    return sortOrder === 'asc' ? dateA - dateB : dateB - dateA;
   });
 
+  const totalPages = Math.ceil(filtered.length / itemsPerPage);
+  const paginatedProdutos = filtered.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
   const totalProdutos = filtered.length;
   const valorTotalEstoqueCusto = filtered.reduce((acc, p) => acc + (Number(p.custo) * Number(p.estoque_atual)), 0);
   const valorTotalVendaPotencial = filtered.reduce((acc, p) => acc + (Number(p.preco_venda) * Number(p.estoque_atual)), 0);
@@ -269,6 +284,7 @@ export default function Produtos() {
             <thead>
               <tr>
                 <th>Nome</th>
+                <th>Código</th>
                 <th>Marca</th>
                 <th>Categoria</th>
                 <th>Estoque</th>
@@ -281,6 +297,7 @@ export default function Produtos() {
               ${filtered.map(p => `
                 <tr>
                   <td>${p.nome}</td>
+                  <td>${p.codigo || '-'}</td>
                   <td>${p.marca || '-'}</td>
                   <td>${p.categoria || '-'}</td>
                   <td>${p.estoque_atual} ${p.unidade}</td>
@@ -306,75 +323,88 @@ export default function Produtos() {
 
   function openEdit(p: Produto) {
     setEditing(p);
-    setForm({ ...p });
+    
+    let updatedForm = { ...p };
+
+    if (p.lotes && p.lotes.length > 0) {
+      // Pega o lote mais recente baseado na data de entrada e criado_em
+      const loteMaisRecente = [...p.lotes].sort((a, b) => {
+        const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
+        const dateB = new Date(b.data_entrada || '2000-01-01').getTime();
+        if (dateA === dateB) {
+          const crA = new Date(a.criado_em || '2000-01-01').getTime();
+          const crB = new Date(b.criado_em || '2000-01-01').getTime();
+          return crB - crA;
+        }
+        return dateB - dateA;
+      })[0];
+
+      // Preenche os campos do form com os dados do lote mais recente
+      updatedForm.custo = loteMaisRecente.custo;
+      updatedForm.data_entrada = loteMaisRecente.data_entrada || updatedForm.data_entrada;
+      updatedForm.data_validade = loteMaisRecente.data_validade || updatedForm.data_validade;
+      updatedForm.codigo = loteMaisRecente.codigo_barras || updatedForm.codigo;
+
+      // Recalcula a margem se o custo for atualizado
+      const custo = Number(updatedForm.custo) || 0;
+      const venda = Number(updatedForm.preco_venda) || 0;
+      if (custo > 0 && venda > 0) {
+        updatedForm.margem = Number((((venda - custo) / custo) * 100).toFixed(2));
+      }
+    }
+
+    setForm(updatedForm);
     setShowForm(true);
   }
 
   function abrirModalLote() {
-    let ultimoCodigo = editing?.codigo || '';
-    if (editing?.lotes && editing.lotes.length > 0) {
-      const lotesOrdenados = [...editing.lotes].sort((a, b) => new Date(b.data_entrada).getTime() - new Date(a.data_entrada).getTime());
-      ultimoCodigo = lotesOrdenados[0].codigo_barras || ultimoCodigo;
-    }
-
     setLoteFormMode('new');
     setLoteEditId(null);
     setLoteForm({
       quantidade: 0,
       custo: 0,
-      data_entrada: new Date().toISOString().split('T')[0],
+      data_entrada: '',
       data_validade: '',
       observacao: '',
-      codigo_barras: ultimoCodigo
+      codigo_barras: ''
     });
     setShowLoteForm(true);
   }
 
-  // Verificação para formulário de produtos
   async function verificarCodigo(codigoStr: string) {
     if (!codigoStr || codigoStr.trim() === '') return;
-    
     if (editing && editing.codigo === codigoStr) return;
 
     const { data: pData } = await supabase.from('produtos').select('*').eq('codigo', codigoStr);
     const { data: lData } = await supabase.from('produto_lotes').select('*').eq('codigo_barras', codigoStr);
 
     let prodIdEncontrado = pData?.[0]?.id || lData?.[0]?.produto_id;
-    
     if (prodIdEncontrado) {
         if (editing && editing.id === prodIdEncontrado) return;
-
         const { data: fullProd } = await supabase.from('produtos').select('*').eq('id', prodIdEncontrado).single();
         const { data: fullLotes } = await supabase.from('produto_lotes').select('*').eq('produto_id', prodIdEncontrado).order('data_entrada', { ascending: false });
-        
         if (fullProd) {
             setCodigoConflitoData({ produto: fullProd, lotes: fullLotes || [] });
             setShowCodigoConflito(true);
-            // ALTERAÇÃO 1: Fecha o formulário de produto automaticamente
             setShowForm(false);
         }
     }
   }
 
-  // ALTERAÇÃO 2: Verificação específica para formulário de lotes
   async function verificarCodigoLote(codigoStr: string) {
     if (!codigoStr || codigoStr.trim() === '') return;
-    
-    if (loteEditId) return; // Se está editando um lote, não verifica
+    if (loteEditId) return;
 
     const { data: pData } = await supabase.from('produtos').select('*').eq('codigo', codigoStr);
     const { data: lData } = await supabase.from('produto_lotes').select('*').eq('codigo_barras', codigoStr);
 
     let prodIdEncontrado = pData?.[0]?.id || lData?.[0]?.produto_id;
-    
     if (prodIdEncontrado) {
         const { data: fullProd } = await supabase.from('produtos').select('*').eq('id', prodIdEncontrado).single();
         const { data: fullLotes } = await supabase.from('produto_lotes').select('*').eq('produto_id', prodIdEncontrado).order('data_entrada', { ascending: false });
-        
         if (fullProd) {
             setCodigoConflitoData({ produto: fullProd, lotes: fullLotes || [] });
             setShowCodigoConflito(true);
-            // ALTERAÇÃO 1: Fecha também o formulário de lote
             setShowLoteForm(false);
         }
     }
@@ -445,7 +475,6 @@ export default function Produtos() {
       condicao_produto: 'perda',
       motivo: toUpperSafe('Estoque vencido / Avaria.')
     };
-
     const { error: movError } = await supabase.from('movimentacoes_estoque').insert([payloadMov]);
 
     if (movError) {
@@ -476,7 +505,6 @@ export default function Produtos() {
     const custo = Number(next.custo) || 0;
     let venda = Number(next.preco_venda) || 0;
     const estoque = Number(next.estoque_atual) || 0;
-    
     if ((field === 'custo' || field === 'preco_venda') && custo > 0) {
       if (venda > 0) {
         next.margem = Number((((venda - custo) / custo) * 100).toFixed(2));
@@ -497,7 +525,6 @@ export default function Produtos() {
   async function handleSave() {
     if (!form.nome) { toast.error('Nome é obrigatório'); return; }
     
-    // ALTERAÇÃO 3: Conversão automática para maiúsculas ao salvar
     const payload = {
       nome: toUpperSafe(form.nome),
       marca: toUpperSafe(form.marca || ''),
@@ -540,7 +567,6 @@ export default function Produtos() {
         codigo_barras: toUpperSafe(payload.codigo),
         status: payload.estoque_atual > 0 ? 'ativo' : 'esgotado'
       });
-
       await logAction(user?.name || '', 'cadastrar_produto', form.nome || '');
       toast.success('Produto e Lote Inicial cadastrados');
     }
@@ -571,22 +597,24 @@ export default function Produtos() {
                 quantidade: qtdNovo,
                 quantidade_inicial: qtdNovo,
                 quantidade_atual: novaQtdAtual,
-                status: novaQtdAtual <= 0 ? 'esgotado' : 'ativo'
+                status: novaQtdAtual <= 0 ? 'esgotado' : 'ativo',
+                custo: custoNovo,
+                data_entrada: loteForm.data_entrada || new Date().toISOString().split('T')[0],
+                data_validade: loteForm.data_validade || null,
+                observacao: toUpperSafe(loteForm.observacao || ''),
+                codigo_barras: toUpperSafe(loteForm.codigo_barras || '')
             }).eq('id', loteEditId);
-
             if (loteError) {
                 toast.error('Erro ao atualizar lote: ' + loteError.message);
                 return;
             }
 
             const novoEstoque = estoqueAntigo + diff;
-            
             const { error: prodError } = await supabase.from('produtos').update({
                 estoque_atual: novoEstoque,
                 valor_estoque: custoAntigo * novoEstoque,
                 lucro_estoque: editing.lucro_produto * novoEstoque,
             }).eq('id', editing.id);
-
             if (prodError) {
                 toast.error('Erro ao atualizar estoque do produto.');
                 return;
@@ -597,20 +625,18 @@ export default function Produtos() {
         const custoMedio = ((estoqueAntigo * custoAntigo) + (qtdNovo * custoNovo)) / (estoqueAntigo + qtdNovo);
         const novoEstoque = estoqueAntigo + qtdNovo;
 
-        // ALTERAÇÃO 3: Conversão para maiúsculas no lote
         const { error: loteError } = await supabase.from('produto_lotes').insert({
           produto_id: editing.id,
           quantidade: qtdNovo, 
           quantidade_inicial: qtdNovo,
           quantidade_atual: qtdNovo,
           custo: custoNovo,
-          data_entrada: loteForm.data_entrada,
+          data_entrada: loteForm.data_entrada || new Date().toISOString().split('T')[0],
           data_validade: loteForm.data_validade || null,
           observacao: toUpperSafe(loteForm.observacao || ''),
           codigo_barras: toUpperSafe(loteForm.codigo_barras || ''),
           status: 'ativo'
         });
-        
         if (loteError) {
           toast.error('Erro ao registrar lote: ' + loteError.message);
           return;
@@ -619,7 +645,6 @@ export default function Produtos() {
         const venda = Number(editing.preco_venda) || 0;
         const lucroProduto = venda - custoMedio;
         const margemNova = custoMedio > 0 ? ((venda - custoMedio) / custoMedio) * 100 : 0;
-        
         const { error: prodError } = await supabase.from('produtos').update({
           custo: custoMedio,
           estoque_atual: novoEstoque,
@@ -627,11 +652,10 @@ export default function Produtos() {
           lucro_produto: lucroProduto,
           valor_estoque: custoMedio * novoEstoque,
           lucro_estoque: lucroProduto * novoEstoque,
-          data_entrada: loteForm.data_entrada,
+          data_entrada: loteForm.data_entrada || new Date().toISOString().split('T')[0],
           data_validade: loteForm.data_validade || null,
           codigo: toUpperSafe(loteForm.codigo_barras || editing.codigo)
         }).eq('id', editing.id);
-        
         if (prodError) {
           toast.error('Erro ao atualizar produto com os dados do lote.');
           return;
@@ -660,7 +684,7 @@ export default function Produtos() {
       setLoteForm({
           quantidade: lote.quantidade_inicial || lote.quantidade,
           custo: lote.custo,
-          data_entrada: lote.data_entrada,
+          data_entrada: lote.data_entrada || '',
           data_validade: lote.data_validade || '',
           observacao: lote.observacao || '',
           codigo_barras: lote.codigo_barras || ''
@@ -670,12 +694,57 @@ export default function Produtos() {
       setShowLoteForm(true);
   }
 
-  const historicoLotesFiltrados = (editing?.lotes || []).filter(l => {
-    const term = historicoBusca.toLowerCase();
-    const matchBusca = (l.codigo_barras || '').toLowerCase().includes(term) || (l.observacao || '').toLowerCase().includes(term);
-    const matchData = historicoFiltroData ? l.data_entrada === historicoFiltroData : true;
-    return matchBusca && matchData;
-  });
+  function handleEditarLoteHistorico(lote: any) {
+    setLoteEditId(lote.id);
+    setLoteFormMode('edit');
+    setLoteForm({
+        quantidade: lote.quantidade_inicial || lote.quantidade,
+        custo: lote.custo,
+        data_entrada: lote.data_entrada || '',
+        data_validade: lote.data_validade || '',
+        observacao: lote.observacao || '',
+        codigo_barras: lote.codigo_barras || ''
+    });
+    setShowHistoryModal(false);
+    setShowLoteForm(true);
+  }
+
+  const historicoLotesFiltrados = (editing?.lotes || [])
+    .filter(l => {
+      const term = historicoBusca.toLowerCase();
+      const matchBusca = (l.codigo_barras || '').toLowerCase().includes(term) || (l.observacao || '').toLowerCase().includes(term);
+      const matchData = historicoFiltroData ? l.data_entrada === historicoFiltroData : true;
+      return matchBusca && matchData;
+    })
+    .sort((a, b) => {
+      if (historicoSortOption === 'registro_desc') {
+        return new Date(b.data_entrada || '2000-01-01').getTime() - new Date(a.data_entrada || '2000-01-01').getTime();
+      }
+      if (historicoSortOption === 'registro_asc') {
+        return new Date(a.data_entrada || '2000-01-01').getTime() - new Date(b.data_entrada || '2000-01-01').getTime();
+      }
+      if (historicoSortOption === 'validade_asc') {
+        const dateA = a.data_validade ? new Date(a.data_validade).getTime() : 9999999999999;
+        const dateB = b.data_validade ? new Date(b.data_validade).getTime() : 9999999999999;
+        return dateA - dateB;
+      }
+      if (historicoSortOption === 'validade_desc') {
+        const dateA = a.data_validade ? new Date(a.data_validade).getTime() : -9999999999999;
+        const dateB = b.data_validade ? new Date(b.data_validade).getTime() : -9999999999999;
+        return dateB - dateA;
+      }
+      if (historicoSortOption === 'saldo_desc') {
+        const saldoA = Number(a.quantidade_atual || a.quantidade);
+        const saldoB = Number(b.quantidade_atual || b.quantidade);
+        return saldoB - saldoA;
+      }
+      if (historicoSortOption === 'saldo_asc') {
+        const saldoA = Number(a.quantidade_atual || a.quantidade);
+        const saldoB = Number(b.quantidade_atual || b.quantidade);
+        return saldoA - saldoB;
+      }
+      return 0;
+    });
 
   const mDash = {
     totalComprado: (editing?.lotes || []).reduce((acc, l) => acc + Number(l.quantidade_inicial || l.quantidade), 0),
@@ -701,6 +770,7 @@ export default function Produtos() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+         
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Total Produtos</span>
             <Boxes className="h-4 w-4" />
@@ -708,7 +778,9 @@ export default function Produtos() {
           <p className="text-2xl font-mono font-bold text-foreground">{totalProdutos}</p>
         </div>
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
+        
           <div className="flex items-center justify-between text-muted-foreground">
+   
             <span className="text-xs font-bold uppercase">Total Estoque (Custo)</span>
             <DollarSign className="h-4 w-4" />
           </div>
@@ -716,13 +788,15 @@ export default function Produtos() {
         </div>
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
           <div className="flex items-center justify-between text-muted-foreground">
+          
             <span className="text-xs font-bold uppercase">Total Venda (Estoque)</span>
             <TrendingUp className="h-4 w-4" />
           </div>
           <p className="text-2xl font-mono font-bold text-green-400">{formatCurrency(valorTotalVendaPotencial)}</p>
         </div>
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
-          <div className="flex items-center justify-between text-muted-foreground">
+         
+         <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Lucro Total Médio</span>
             <BarChart3 className="h-4 w-4" />
           </div>
@@ -745,26 +819,54 @@ export default function Produtos() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="relative md:col-span-2">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="relative md:col-span-2 lg:col-span-2">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
+   
             placeholder="Buscar por nome, marca, código..."
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
         </div>
 
-        <div className="relative">
+        <div className="relative md:col-span-1">
+          <select
+            value={filtroCategoria}
+         
+            onChange={(e) => setFiltroCategoria(e.target.value)}
+            className="w-full h-10 pl-3 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm appearance-none"
+          >
+            <option value="">Todas Categorias</option>
+            {categoriasExistentes.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+       
+         </div>
+
+        <div className="relative md:col-span-1">
+    
+          <select
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
+            className="w-full h-10 pl-3 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm appearance-none"
+          >
+            <option value="desc">Mais Recentes</option>
+            <option value="asc">Mais Antigos</option>
+          </select>
+        </div>
+
+        <div className="relative md:col-span-1">
+        
           <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <input
             type="date"
             value={filtroValidade} onChange={(e) => setFiltroValidade(e.target.value)}
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm [color-scheme:dark]"
           />
+        
         </div>
         
-        <div className="flex flex-col justify-center px-2">
+        <div className="flex flex-col justify-center px-2 md:col-span-1">
           <label className="text-[10px] uppercase text-muted-foreground font-bold mb-1 flex justify-between">
             Filtro Estoque Máx: <span>Até {maxEstoqueFilter === 999 ? '∞' : maxEstoqueFilter}</span>
           </label>
@@ -780,22 +882,29 @@ export default function Produtos() {
       {loading ? (
         <div className="h-32 bg-card animate-pulse rounded-xl border border-border shadow-sm" />
       ) : (
-        <div className="rounded-xl border border-border overflow-hidden bg-card shadow-sm">
+        <div className="rounded-xl border border-border overflow-hidden bg-card shadow-sm flex flex-col">
           <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-muted">
             <table className="w-full text-sm text-left border-collapse">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
-                 <tr>
+             
+                <tr>
                   <th className="p-3 font-medium uppercase text-xs">Nome</th>
+                  <th className="p-3 font-medium uppercase text-xs text-center">Código</th>
                   <th className="p-3 font-medium uppercase text-xs">Marca</th>
+                 
                   <th className="p-3 font-medium uppercase text-xs text-right">Custo Un.</th>
+      
                   <th className="p-3 font-medium uppercase text-xs text-right">Estoque</th>
                   <th className="p-3 font-medium uppercase text-xs text-center">Data Entrada</th>
                   <th className="p-3 font-medium uppercase text-xs text-center">Validade (Base)</th>
+                
                   <th className="p-3 font-medium uppercase text-xs text-right">Ações</th>
+            
                 </tr>
               </thead>
-               <tbody className="divide-y divide-border">
-                {filtered.map((p) => {
+              <tbody className="divide-y divide-border">
+                {paginatedProdutos.map((p) => {
+                 
                   const isZerado = p.estoque_atual <= 0;
                   const isBaixo = p.estoque_atual > 0 && p.estoque_atual <= (p.estoque_minimo || 0);
                   const statusValidade = getStatusValidade(p);
@@ -805,20 +914,28 @@ export default function Produtos() {
                   else if (statusValidade.status === 'proximo') highlightClass = 'bg-yellow-500/10 text-yellow-600';
                   else if (isZerado) highlightClass = 'animate-pulse bg-red-500/10 text-red-500';
                   else if (isBaixo) highlightClass = 'bg-orange-500/10 text-orange-500';
-
                   return (
                     <tr 
                       key={p.id} 
                       className={`hover:bg-muted/20 transition-colors ${highlightClass}`}
                     >
-                       <td className="p-3 font-medium">
+    
+                      <td className="p-3 font-medium">
                         <div className="flex flex-col">
                           <span className="text-foreground">{p.nome}</span>
+                
                           <span className="text-[10px] text-muted-foreground uppercase">{p.categoria || 'Geral'}</span>
+   
                         </div>
                         {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Sem Estoque</span>}
+                    
                         {statusValidade.status === 'vencido' && <span className="mt-1 text-[10px] bg-red-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vencido ({statusValidade.qtd} un.)</span>}
                         {statusValidade.status === 'proximo' && <span className="mt-1 text-[10px] bg-yellow-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vence em {statusValidade.dias} dias ({statusValidade.qtd} un.)</span>}
+                      </td>
+             
+                      <td className="p-3 text-center font-mono text-muted-foreground">
+        
+                        {p.codigo || '-'}
                       </td>
                       <td className="p-3 text-muted-foreground italic">
                         {p.marca || '-'}
@@ -833,20 +950,72 @@ export default function Produtos() {
                       </td>
                       <td className="p-3 text-right">
                         <div className="flex justify-end gap-1">
+                        
                           {activeTab === 'vencidos' && (
                             <button onClick={() => enviarParaTrocasAvaria(p)} className="p-1.5 rounded-lg hover:bg-red-500/20 text-red-500 flex items-center gap-1 text-[10px] font-bold uppercase border border-red-500/20 mr-2 transition-colors" title="Lançar como Avaria na tela de Trocas">
+                  
                               <ArrowRightLeft className="h-3.5 w-3.5" /> Avaria
+        
                             </button>
                           )}
+                      
                           <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
+                 
                           <button onClick={() => handleDelete(p)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                         </div>
-                      </td>
+       
+                       </td>
                     </tr>
+              
                   );
                 })}
               </tbody>
             </table>
+          </div>
+
+          <div className="p-3 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3 bg-muted/20">
+            <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground font-medium">Itens por página:</span>
+   
+     
+                <select
+                    value={itemsPerPage}
+                    onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
+                    className="h-8 px-2 rounded-lg border border-border bg-background text-xs text-foreground focus:ring-1 focus:ring-primary outline-none"
+                >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+           
+                    <option value={30}>30</option>
+                </select>
+            </div>
+            <div className="flex items-center gap-4">
+                <span className="text-xs text-muted-foreground font-medium">
+                 
+                 Página <span className="font-bold text-foreground">{currentPage}</span> de <span className="font-bold text-foreground">{totalPages || 1}</span>
+                </span>
+                <div className="flex gap-1">
+                    <button
+                        onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+              
+                        disabled={currentPage === 1}
+                        className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:hover:bg-background transition-colors text-foreground"
+                    >
+                      
+                        <ChevronLeft className="h-4 w-4" />
+        
+                    </button>
+                    <button
+                        onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
+                
+                        disabled={currentPage === totalPages || totalPages === 0}
+                        className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:hover:bg-background transition-colors text-foreground"
+                    >
+                        <ChevronRight className="h-4 w-4" />
+                  
+                    </button>
+                </div>
+            </div>
           </div>
         </div>
       )}
@@ -858,29 +1027,35 @@ export default function Produtos() {
               <div className="flex items-center gap-4 flex-wrap">
                 <h2 className="text-lg font-black uppercase text-primary italic tracking-tighter">{editing ? 'Editar Produto' : 'Novo Produto'}</h2>
                 {editing && (
-                   <div className="flex gap-2">
+                  <div className="flex gap-2">
                     <button onClick={abrirModalLote} className="h-8 px-3 bg-primary/10 text-primary border border-primary/20 rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-primary/20 transition">
+                      
                       <Boxes className="h-3.5 w-3.5" /> Cadastrar Novo Lote
                     </button>
                     <button onClick={() => setShowHistoryModal(true)} className="h-8 px-3 bg-muted text-muted-foreground border border-border rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-border transition">
+              
                       <History className="h-3.5 w-3.5" /> Ver Histórico
+         
                     </button>
                   </div>
                 )}
               </div>
+          
               <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition"><X className="h-5 w-5" /></button>
             </div>
 
+      
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* ALTERAÇÃO 4: Campos bloqueados na edição, exceto margem e preço_venda */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Nome *</label>
+               
                 <input 
                   value={form.nome || ''} 
                   onChange={(e) => updateField('nome', e.target.value)} 
                   disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
+           
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Marca</label>
@@ -890,12 +1065,14 @@ export default function Produtos() {
                   disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
+           
               </div>
 
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Código de Barras</label>
                 <div className="flex gap-2">
                   <input 
+         
                     value={form.codigo || ''} 
                     onChange={(e) => updateField('codigo', e.target.value)} 
                     onBlur={(e) => verificarCodigo(e.target.value)}
@@ -904,20 +1081,26 @@ export default function Produtos() {
                     className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                   <button 
+          
                     type="button" 
                     onClick={() => setScanMode('produto')} 
                     disabled={!!editing}
                     className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md disabled:opacity-50 disabled:cursor-not-allowed" 
+    
                     title="Escanear com a câmera"
                   >
                     <Camera className="h-4 w-4" />
                   </button>
+        
                   <button 
+             
                     onClick={genCodeProduto} 
                     disabled={!!editing}
                     className="px-4 bg-muted border border-border hover:border-primary/40 rounded-xl text-[10px] font-black uppercase transition text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+   
                   >
                     Gerar
+  
                   </button>
                 </div>
               </div>
@@ -927,80 +1110,99 @@ export default function Produtos() {
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Entrada</label>
                   <input 
                     type="date" 
+              
                     value={form.data_entrada || ''} 
                     onChange={(e) => updateField('data_entrada', e.target.value)} 
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
+            
                   />
+  
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade (Lote Base)</label>
                   <input 
+            
                     type="date" 
+ 
                     value={form.data_validade || ''} 
                     onChange={(e) => updateField('data_validade', e.target.value)} 
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
+  
                 </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
                   <label className="text-[10px] font-black text-orange-500 uppercase">Custo {editing && "(Médio)"}</label>
+    
                   <input 
                     type="text" 
                     value={formatCurrency(form.custo || 0)} 
                     onChange={(e) => updateField('custo', e.target.value)} 
+           
                     disabled={!!editing} 
                     className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-500 font-mono font-bold disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                 </div>
-                {/* ALTERAÇÃO 4: Margem permanece editável */}
-                <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
+       
+                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
+            
                   <label className="text-[10px] font-black text-blue-500 uppercase">Margem (%)</label>
                   <input 
                     type="number" 
+          
                     step="0.01" 
                     value={form.margem === 0 ? '' : form.margem} 
                     onChange={(e) => updateField('margem', e.target.value)} 
                     className="w-full bg-transparent border-none p-0 focus:ring-0 text-blue-500 font-mono font-bold" 
                   />
                 </div>
-                {/* ALTERAÇÃO 4: Preço de venda permanece editável */}
+           
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
                   <label className="text-[10px] font-black text-green-500 uppercase">Venda</label>
                   <input 
                     type="text" 
+                
                     value={formatCurrency(form.preco_venda || 0)} 
+    
                     onChange={(e) => updateField('preco_venda', e.target.value)} 
                     className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-500 font-mono font-bold" 
                   />
                 </div>
+   
               </div>
 
+    
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Categoria</label>
                   <input 
-                    list="categorias-list" 
+       
+                     list="categorias-list" 
+     
                     value={form.categoria || ''} 
                     onChange={(e) => updateField('categoria', e.target.value)} 
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
+   
                   <datalist id="categorias-list">
                     {categoriasExistentes.map(c => <option key={c} value={c} className="bg-card text-foreground" />)}
                   </datalist>
                 </div>
                  <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
+  
+                    <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
                   <select 
                     value={form.fornecedor || ''} 
                     onChange={(e) => updateField('fornecedor', e.target.value)} 
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none disabled:opacity-70 disabled:cursor-not-allowed"
                   >
+   
                     <option value="" className="bg-card text-foreground">Selecione...</option>
                     {fornecedores.map(f => <option key={f.nome} value={f.nome} className="bg-card text-foreground">{f.nome}</option>)}
                   </select>
@@ -1011,12 +1213,15 @@ export default function Produtos() {
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Atual</label>
                   <input 
+                  
                     type="number" 
+      
                     value={form.estoque_atual || 0} 
                     onChange={(e) => updateField('estoque_atual', Number(e.target.value))} 
                     disabled={!!editing} 
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
+   
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Unidade</label>
@@ -1026,16 +1231,19 @@ export default function Produtos() {
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none disabled:opacity-70 disabled:cursor-not-allowed"
                   >
+   
                     <option value="Und" className="bg-card text-foreground">Unidade (Und)</option>
                     <option value="Cx" className="bg-card text-foreground">Caixa (Cx)</option>
                     <option value="Kg" className="bg-card text-foreground">Quilo (Kg)</option>
                     <option value="Mt" className="bg-card text-foreground">Metro (Mt)</option>
+    
                     <option value="Lt" className="bg-card text-foreground">Litro (Lt)</option>
                   </select>
                 </div>
               </div>
 
               <div className="space-y-1">
+          
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
                 <input 
                   type="number" 
@@ -1044,19 +1252,23 @@ export default function Produtos() {
                   disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
+            
               </div>
 
               <div className="flex items-center gap-2 h-full pt-4">
                 <input 
                   type="checkbox" 
                   checked={form.ativo !== false} 
+          
                   onChange={(e) => updateField('ativo', e.target.checked)} 
                   disabled={!!editing}
                   className="h-5 w-5 rounded border-border bg-muted accent-primary disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
                 <label className="text-xs font-black uppercase text-foreground">Produto Ativo</label>
-              </div>
+       
+               </div>
 
+     
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Observações Internas</label>
                 <textarea 
@@ -1065,13 +1277,15 @@ export default function Produtos() {
                   disabled={!!editing}
                   rows={2} 
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary/40 text-foreground resize-none disabled:opacity-70 disabled:cursor-not-allowed" 
+         
                 />
               </div>
             </div>
 
             <div className="pt-4 flex gap-3">
               <button onClick={() => setShowForm(false)} className="flex-1 h-12 rounded-xl border border-border text-xs font-black uppercase hover:bg-muted transition text-foreground">Cancelar</button>
-              <button onClick={handleSave} className="flex-[2] h-12 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:bg-primary/90 transition shadow-lg flex items-center justify-center gap-2">
+              <button 
+                onClick={handleSave} className="flex-[2] h-12 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:bg-primary/90 transition shadow-lg flex items-center justify-center gap-2">
                 <Save className="h-4 w-4" /> {editing ? 'Salvar Alterações' : 'Finalizar Cadastro'}
               </button>
             </div>
@@ -1086,6 +1300,7 @@ export default function Produtos() {
               <div>
                 <h3 className="text-primary font-black uppercase italic tracking-tighter">
                     {loteFormMode === 'edit' ? 'Editar Lote' : 'Novo Lote'}
+                
                 </h3>
                 <p className="text-[10px] text-muted-foreground font-bold uppercase">{editing.nome}</p>
               </div>
@@ -1097,78 +1312,93 @@ export default function Produtos() {
                 <label className="text-[10px] font-black uppercase text-muted-foreground">Código de Barras do Lote</label>
                 <div className="flex gap-2">
                   <input 
-                    disabled={loteFormMode === 'edit'} 
                     value={loteForm.codigo_barras} 
+  
                     onChange={(e) => setLoteForm({...loteForm, codigo_barras: e.target.value})} 
                     onBlur={(e) => verificarCodigoLote(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') verificarCodigoLote(loteForm.codigo_barras); }}
-                    className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary text-foreground disabled:opacity-50" 
+                    className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary text-foreground" 
                   />
                   <button 
-                    disabled={loteFormMode === 'edit'} 
                     type="button" 
+           
                     onClick={() => setScanMode('lote')} 
-                    className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md disabled:opacity-50"
+                    className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md"
                   >
                     <Camera className="h-4 w-4" />
+       
                   </button>
                   <button 
-                    disabled={loteFormMode === 'edit'} 
                     onClick={genCodeLote} 
-                    className="px-4 bg-muted border border-border rounded-xl text-[10px] font-black uppercase text-foreground disabled:opacity-50"
-                  >
+                    className="px-4 bg-muted border border-border rounded-xl text-[10px] font-black uppercase text-foreground"
+   
+                 >
+              
                     Gerar
                   </button>
                 </div>
               </div>
 
-              <div className="space-y-1">
+   
+             <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-orange-500">Quantidade Entrada</label>
+          
                 <input 
                   type="number" 
                   value={loteForm.quantidade} 
+  
                   onChange={(e) => setLoteForm({...loteForm, quantidade: Number(e.target.value)})} 
                   className="w-full p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl text-xs font-bold outline-none focus:border-orange-500 text-foreground" 
+   
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-blue-500">Custo Unitário (R$)</label>
+  
+                 <label className="text-[10px] font-black uppercase text-blue-500">Custo Unitário (R$)</label>
                  <input 
-                   disabled={loteFormMode === 'edit'} 
+                 
                    type="text" 
                    value={formatCurrency(loteForm.custo)} 
-                   onChange={(e) => setLoteForm({...loteForm, custo: parseCurrencyToNumber(e.target.value)})} 
-                   className="w-full p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 text-foreground disabled:opacity-50" 
+    
+                 onChange={(e) => setLoteForm({...loteForm, custo: parseCurrencyToNumber(e.target.value)})} 
+                   className="w-full p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 text-foreground" 
                  />
+     
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
+             
+               <div className="space-y-1">
+                 <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
                 <input 
-                  disabled={loteFormMode === 'edit'} 
                   type="date" 
+                  
                   value={loteForm.data_entrada} 
-                  onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} 
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark] disabled:opacity-50" 
+   
+                 onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} 
+                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" 
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase text-muted-foreground">Data Validade</label>
+ 
+    
+               <label className="text-[10px] font-black uppercase text-muted-foreground">Data Validade</label>
                 <input 
-                  disabled={loteFormMode === 'edit'} 
                   type="date" 
                   value={loteForm.data_validade} 
                   onChange={(e) => setLoteForm({...loteForm, data_validade: e.target.value})} 
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark] disabled:opacity-50" 
+ 
+   
+                 className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" 
                 />
                </div>
               <div className="md:col-span-2 space-y-1">
-                <label className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
+                 <label className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
+ 
+  
                 <textarea 
-                  disabled={loteFormMode === 'edit'} 
                   value={loteForm.observacao} 
                   onChange={(e) => setLoteForm({...loteForm, observacao: e.target.value})} 
                   rows={2} 
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary text-foreground resize-none disabled:opacity-50" 
+                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary text-foreground resize-none" 
                 />
               </div>
             </div>
@@ -1183,71 +1413,108 @@ export default function Produtos() {
       {showHistoryModal && editing && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
+         
             <div className="p-6 border-b border-border bg-muted/30 flex justify-between items-center">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-primary/10 rounded-xl">
                    <History className="h-6 w-6 text-primary" />
                 </div>
+      
                 <div>
                   <h2 className="text-xl font-black uppercase italic text-foreground leading-tight">Histórico de Lotes</h2>
                   <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">{editing.nome}</p>
                 </div>
-              </div>
+           
+               </div>
               <button onClick={() => setShowHistoryModal(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
             </div>
 
             <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 bg-muted/10 border-b border-border">
               <div className="p-3 bg-card border border-border rounded-xl">
+                  
                   <p className="text-[9px] font-black uppercase text-muted-foreground">Total Comprado</p>
+                
                   <p className="text-lg font-mono font-bold">{mDash.totalComprado} {editing.unidade}</p>
                </div>
                <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-muted-foreground">Em Estoque (Lotes)</p>
                   <p className="text-lg font-mono font-bold text-primary">{mDash.estoqueLotesAtual} {editing.unidade}</p>
+            
                </div>
                <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-red-500">Lotes Vencidos</p>
-                   <p className="text-lg font-mono font-bold text-red-500">{mDash.vencidos}</p>
+     
+                  <p className="text-lg font-mono font-bold text-red-500">{mDash.vencidos}</p>
                </div>
                <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-orange-500">Custo mais Alto</p>
                   <p className="text-lg font-mono font-bold text-orange-500">{formatCurrency(mDash.custoMaisAlto)}</p>
+ 
                </div>
             </div>
 
             <div className="p-4 border-b border-border flex flex-col md:flex-row gap-3">
-              <div className="relative flex-1">
+    
+               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          
                 <input value={historicoBusca} onChange={(e) => setHistoricoBusca(e.target.value)} placeholder="Filtrar por código ou observação..." className="w-full h-10 pl-10 pr-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
               </div>
-              <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary [color-scheme:dark]" />
+            
+              <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-background text-foreground border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-primary [color-scheme:dark]" />
+              
+   
+               <select
+                  value={historicoSortOption}
+                  onChange={(e) => setHistoricoSortOption(e.target.value as any)}
+                  className="h-10 px-4 bg-background text-foreground border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer"
+              >
+       
+                  <option value="registro_desc" className="bg-card text-foreground">Mais Recentes</option>
+                  <option value="registro_asc" className="bg-card text-foreground">Mais Antigos</option>
+                  <option value="validade_asc" className="bg-card text-foreground">Validade: Próx. a Vencer</option>
+                  <option value="validade_desc" className="bg-card text-foreground">Validade: Mais Distantes</option>
+                  <option value="saldo_desc" className="bg-card text-foreground">Maior Saldo em Estoque</option>
+                  <option value="saldo_asc" className="bg-card text-foreground">Menor Saldo em Estoque</option>
+              </select>
             </div>
 
+        
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
                <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
+             
                   <tr>
+                    
                     <th className="p-3">Código</th>
                     <th className="p-3 text-center">Entrada</th>
                      <th className="p-3 text-center">Validade</th>
                     <th className="p-3 text-right">Custo</th>
+       
                     <th className="p-3 text-right">Inicial</th>
+   
                     <th className="p-3 text-right">Saldo</th>
                     <th className="p-3">Observação</th>
+                    <th className="p-3 text-right">Ação</th>
                   </tr>
+  
                 </thead>
+  
                 <tbody className="divide-y divide-border">
                   {historicoLotesFiltrados.length === 0 ? (
-                    <tr><td colSpan={7} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado.</td></tr>
+                    <tr><td colSpan={8} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado.</td></tr>
                   ) : (
                     historicoLotesFiltrados.map((l) => {
                       const lQtdAtual = Number(l.quantidade_atual || l.quantidade);
-                       const isEsgotado = lQtdAtual <= 0;
+  
+                      const isEsgotado = lQtdAtual <= 0;
                       const isVencido = getDaysDiff(l.data_validade) < 0 && !isEsgotado;
                       return (
-                         <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
+                     
+                        <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
                           <td className="p-3 font-mono font-bold text-primary">{l.codigo_barras || '-'}</td>
                           <td className="p-3 text-center">{new Date(l.data_entrada).toLocaleDateString('pt-BR')}</td>
+                        
                           <td className={`p-3 text-center font-bold ${isVencido ? 'text-red-500' : ''}`}>
                             {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                           </td>
@@ -1255,7 +1522,14 @@ export default function Produtos() {
                           <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
                           <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
                           <td className="p-3 text-xs max-w-[200px] truncate" title={l.observacao}>{l.observacao || '-'}</td>
+                          <td className="p-3 text-right">
+                            <button onClick={() => handleEditarLoteHistorico(l)} className="p-1.5 rounded hover:bg-primary/20 bg-primary/10 text-primary transition-colors">
+                              <Pencil className="h-3.5 w-3.5" />
+  
+                            </button>
+                          </td>
                         </tr>
+                      
                       );
                     })
                   )}
@@ -1267,41 +1541,55 @@ export default function Produtos() {
       )}
 
       {showCodigoConflito && codigoConflitoData && (
+     
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
             <div className="p-6 border-b border-border bg-muted/30 flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-black uppercase italic text-foreground leading-tight text-red-500 flex items-center gap-2">
+       
                   <AlertTriangle className="h-6 w-6" /> Atenção! Código já cadastrado
                 </h2>
                 <p className="text-sm mt-2 text-foreground">
                   Produto encontrado: <span className="uppercase underline animate-pulse font-black text-red-500 bg-red-500/10 px-2 py-1 rounded">{codigoConflitoData.produto.nome}</span>
+    
                 </p>
+ 
                 {codigoConflitoData.lotes.length > 1 && (
                   <p className="text-sm mt-2 text-foreground">
                     <span className="uppercase underline animate-pulse font-black text-red-500 bg-red-500/10 px-2 py-1 rounded">{codigoConflitoData.lotes.length} LOTES CADASTRADOS</span>
-                  </p>
+               
+                 </p>
+           
                 )}
               </div>
               <button onClick={() => setShowCodigoConflito(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
             </div>
             
+    
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
+            
               <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
+                  
                     <th className="p-3">Código</th>
                     <th className="p-3 text-center">Entrada</th>
+           
                     <th className="p-3 text-center">Validade</th>
                     <th className="p-3 text-right">Custo</th>
+                    
                     <th className="p-3 text-right">Inicial</th>
                     <th className="p-3 text-right">Saldo</th>
                     <th className="p-3">Observação</th>
+  
                     <th className="p-3 text-right">Ação</th>
                   </tr>
-                </thead>
+             
+                 </thead>
                 <tbody className="divide-y divide-border">
                   {codigoConflitoData.lotes.map(l => {
+        
                     const lQtdAtual = Number(l.quantidade_atual || l.quantidade);
                     const isEsgotado = lQtdAtual <= 0;
                     const isVencido = getDaysDiff(l.data_validade) < 0 && !isEsgotado;
@@ -1309,20 +1597,26 @@ export default function Produtos() {
                       <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
                         <td className="p-3 font-mono font-bold text-primary">{l.codigo_barras || '-'}</td>
                         <td className="p-3 text-center">{new Date(l.data_entrada).toLocaleDateString('pt-BR')}</td>
+       
                         <td className={`p-3 text-center font-bold ${isVencido ? 'text-red-500' : ''}`}>
                           {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                         </td>
+             
+                     
                         <td className="p-3 text-right font-mono">{formatCurrency(l.custo)}</td>
                         <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
                         <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
+    
                         <td className="p-3 text-xs max-w-[200px] truncate" title={l.observacao}>{l.observacao || '-'}</td>
                         <td className="p-3 text-right">
                           <button onClick={() => handleEditarLoteConflito(l, codigoConflitoData.produto)} className="p-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20"><Pencil className="h-3.5 w-3.5" /></button>
                         </td>
+            
                       </tr>
                     )
                   })}
                   {codigoConflitoData.lotes.length === 0 && (
+                  
                     <tr><td colSpan={8} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado para este produto.</td></tr>
                   )}
                 </tbody>
@@ -1330,7 +1624,9 @@ export default function Produtos() {
             </div>
 
             <div className="p-4 border-t border-border flex justify-end gap-3 bg-muted/10">
-              <button onClick={() => {
+       
+               <button onClick={() => {
+  
                   setEditing(codigoConflitoData.produto);
                   setForm({ ...codigoConflitoData.produto });
                   setLoteFormMode('new');
@@ -1338,10 +1634,11 @@ export default function Produtos() {
                   setLoteForm({
                       quantidade: 0,
                       custo: 0,
-                      data_entrada: new Date().toISOString().split('T')[0],
+                      data_entrada: '',
                       data_validade: '',
+   
                       observacao: '',
-                      codigo_barras: form.codigo || codigoConflitoData.produto.codigo || ''
+                      codigo_barras: ''
                   });
                   setShowCodigoConflito(false);
                   setShowForm(true);
@@ -1367,6 +1664,7 @@ export default function Produtos() {
             </div>
           </div>
         </div>
+    
       )}
     </div>
   );
