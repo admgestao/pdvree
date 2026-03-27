@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Package, Plus, Search, Pencil, Trash2, X, Save, Camera, Printer, Filter, DollarSign, BarChart3, TrendingUp, Boxes, AlertTriangle, Calendar, ArrowRightLeft, History, Activity, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase, logAction } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -51,6 +51,8 @@ const emptyProduct: Partial<Produto> = {
   observacao: '', valor_estoque: 0, lucro_estoque: 0, lucro_produto: 0,
 };
 
+const UNIDADES_PADRAO = ['Par', 'Und', 'Pç', 'Kg', 'Cm', 'Mt', 'm²', 'Lt', 'Cx'];
+
 export default function Produtos() {
   const { user, isAdmin } = useAuth();
   const [produtos, setProdutos] = useState<Produto[]>([]);
@@ -78,6 +80,8 @@ export default function Produtos() {
 
   const [fornecedores, setFornecedores] = useState<{ nome: string }[]>([]);
   const [categoriasExistentes, setCategoriasExistentes] = useState<string[]>([]);
+  const [unidadesExistentes, setUnidadesExistentes] = useState<string[]>(UNIDADES_PADRAO);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   
   const [scanMode, setScanMode] = useState<'produto' | 'lote' | null>(null);
   
@@ -148,6 +152,26 @@ export default function Produtos() {
 
     const produtosComLotes = (pData || []).map(p => {
       const lotesDoProduto = (lData || []).filter((l: any) => l.produto_id === p.id);
+      
+      // Garante que o grid reflete o lote mais recente se houver divergência
+      if (lotesDoProduto.length > 0) {
+        const loteMaisRecente = [...lotesDoProduto].sort((a, b) => {
+          const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
+          const dateB = new Date(b.data_entrada || '2000-01-01').getTime();
+          if (dateA === dateB) {
+            const crA = new Date(a.criado_em || '2000-01-01').getTime();
+            const crB = new Date(b.criado_em || '2000-01-01').getTime();
+            return crB - crA;
+          }
+          return dateB - dateA;
+        })[0];
+        
+        p.codigo = loteMaisRecente.codigo_barras || p.codigo;
+        p.data_entrada = loteMaisRecente.data_entrada || p.data_entrada;
+        p.data_validade = loteMaisRecente.data_validade || p.data_validade;
+        p.custo = loteMaisRecente.custo;
+      }
+      
       return { ...p, lotes: lotesDoProduto };
     });
 
@@ -161,6 +185,9 @@ export default function Produtos() {
     if (pData) {
       const cats = Array.from(new Set(pData.map(p => p.categoria).filter(Boolean)));
       setCategoriasExistentes(cats);
+      
+      const unids = Array.from(new Set(pData.map(p => p.unidade).filter(Boolean)));
+      setUnidadesExistentes(Array.from(new Set([...UNIDADES_PADRAO, ...unids])));
     }
     setLoading(false);
   }
@@ -362,13 +389,13 @@ export default function Produtos() {
     setLoteForm({
       quantidade: 0,
       custo: 0,
-      data_entrada: new Date().toISOString().split('T')[0], // Alterado para data do dia
+      data_entrada: new Date().toISOString().split('T')[0],
       data_validade: '',
       observacao: '',
-      codigo_barras: form.codigo || (editing ? editing.codigo : '') // Herda código do produto
+      codigo_barras: form.codigo || (editing ? editing.codigo : '')
     });
-    setShowForm(false); // Fecha formulário principal
-    setShowLoteForm(true); // Abre apenas o formulário de lotes
+    setShowForm(false);
+    setShowLoteForm(true);
   }
 
   async function verificarCodigo(codigoStr: string) {
@@ -384,7 +411,6 @@ export default function Produtos() {
         const { data: fullProd } = await supabase.from('produtos').select('*').eq('id', prodIdEncontrado).single();
         const { data: fullLotes } = await supabase.from('produto_lotes').select('*').eq('produto_id', prodIdEncontrado).order('data_entrada', { ascending: false });
         if (fullProd) {
-            // Filtra os lotes para exibir apenas o que causou o conflito
             const lotesFiltrados = (fullLotes || []).filter((l: any) => l.codigo_barras === codigoStr);
             setCodigoConflitoData({ produto: fullProd, lotes: lotesFiltrados });
             setShowCodigoConflito(true);
@@ -402,7 +428,6 @@ export default function Produtos() {
 
     let prodIdEncontrado = pData?.[0]?.id || lData?.[0]?.produto_id;
     if (prodIdEncontrado) {
-        // Correção: Permite o mesmo código se for pro MESMO produto que estamos cadastrando lote
         if (editing && editing.id === prodIdEncontrado) {
             return;
         }
@@ -410,7 +435,6 @@ export default function Produtos() {
         const { data: fullProd } = await supabase.from('produtos').select('*').eq('id', prodIdEncontrado).single();
         const { data: fullLotes } = await supabase.from('produto_lotes').select('*').eq('produto_id', prodIdEncontrado).order('data_entrada', { ascending: false });
         if (fullProd) {
-            // Filtra os lotes para exibir apenas o que causou o conflito
             const lotesFiltrados = (fullLotes || []).filter((l: any) => l.codigo_barras === codigoStr);
             setCodigoConflitoData({ produto: fullProd, lotes: lotesFiltrados });
             setShowCodigoConflito(true);
@@ -561,7 +585,7 @@ export default function Produtos() {
       if (error) { toast.error('Erro ao atualizar: ' + error.message); return;
       }
       
-      // Correção: Sincronizar o lote mais recente com as alterações principais para refletir corretamente no Grid/Edições Futuras
+      // Sincronizar o lote mais recente com as alterações principais para refletir corretamente no Grid/Edições Futuras
       if (editing.lotes && editing.lotes.length > 0) {
         const loteMaisRecente = [...editing.lotes].sort((a, b) => {
           const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
@@ -848,7 +872,6 @@ export default function Produtos() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
-         
           <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Total Produtos</span>
             <Boxes className="h-4 w-4" />
@@ -857,7 +880,6 @@ export default function Produtos() {
         </div>
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
           <div className="flex items-center justify-between text-muted-foreground">
-   
             <span className="text-xs font-bold uppercase">Total Estoque (Custo)</span>
             <DollarSign className="h-4 w-4" />
           </div>
@@ -865,7 +887,6 @@ export default function Produtos() {
         </div>
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
           <div className="flex items-center justify-between text-muted-foreground">
-          
             <span className="text-xs font-bold uppercase">Total Venda (Estoque)</span>
             <TrendingUp className="h-4 w-4" />
           </div>
@@ -874,7 +895,6 @@ export default function Produtos() {
         <div className="p-4 rounded-xl border border-border bg-card space-y-1 shadow-sm">
          <div className="flex items-center justify-between text-muted-foreground">
             <span className="text-xs font-bold uppercase">Lucro Total Médio</span>
- 
             <BarChart3 className="h-4 w-4" />
           </div>
           <p className="text-2xl font-mono font-bold text-blue-400">{formatCurrency(lucroTotalProjetado)}</p>
@@ -905,7 +925,6 @@ export default function Produtos() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-   
             placeholder="Buscar por nome, marca, código..."
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
@@ -914,7 +933,6 @@ export default function Produtos() {
         <div className="relative md:col-span-1">
           <select
             value={filtroCategoria}
-            
             onChange={(e) => setFiltroCategoria(e.target.value)}
             className="w-full h-10 pl-3 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm appearance-none"
           >
@@ -924,7 +942,6 @@ export default function Produtos() {
         </div>
 
         <div className="relative md:col-span-1">
-    
           <select
             value={sortOrder}
             onChange={(e) => setSortOrder(e.target.value as 'desc' | 'asc')}
@@ -936,7 +953,6 @@ export default function Produtos() {
         </div>
 
         <div className="relative md:col-span-1">
-        
           <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           <input
             type="date"
@@ -965,18 +981,15 @@ export default function Produtos() {
           <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-muted">
             <table className="w-full text-sm text-left border-collapse">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
-             
                 <tr>
                   <th className="p-3 font-medium uppercase text-xs">Nome</th>
                   <th className="p-3 font-medium uppercase text-xs text-center">Código</th>
                   <th className="p-3 font-medium uppercase text-xs">Marca</th>
                   <th className="p-3 font-medium uppercase text-xs text-right">Custo Un.</th>
-      
                   <th className="p-3 font-medium uppercase text-xs text-right">Estoque</th>
                   <th className="p-3 font-medium uppercase text-xs text-center">Data Entrada</th>
                   <th className="p-3 font-medium uppercase text-xs text-center">Validade (Base)</th>
                   <th className="p-3 font-medium uppercase text-xs text-right">Ações</th>
-            
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -995,19 +1008,16 @@ export default function Produtos() {
                       key={p.id} 
                       className={`hover:bg-muted/20 transition-colors ${highlightClass}`}
                     >
-           
                       <td className="p-3 font-medium">
                         <div className="flex flex-col">
                           <span className="text-foreground">{p.nome}</span>
                           <span className="text-[10px] text-muted-foreground uppercase">{p.categoria || 'Geral'}</span>
-   
                         </div>
                         {isZerado && <span className="mt-1 text-[10px] bg-red-500 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Sem Estoque</span>}
                         {statusValidade.status === 'vencido' && <span className="mt-1 text-[10px] bg-red-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vencido ({statusValidade.qtd} un.)</span>}
                         {statusValidade.status === 'proximo' && <span className="mt-1 text-[10px] bg-yellow-600 text-white px-1.5 py-0.5 rounded uppercase w-fit inline-block font-bold">Vence em {statusValidade.dias} dias ({statusValidade.qtd} un.)</span>}
                       </td>
                       <td className="p-3 text-center font-mono text-muted-foreground">
-        
                         {p.codigo || '-'}
                       </td>
                       <td className="p-3 text-muted-foreground italic">
@@ -1023,20 +1033,16 @@ export default function Produtos() {
                       </td>
                       <td className="p-3 text-right">
                         <div className="flex justify-end gap-1">
-                        
                           {activeTab === 'vencidos' && (
                             <button onClick={() => enviarParaTrocasAvaria(p)} className="p-1.5 rounded-lg hover:bg-red-500/20 text-red-500 flex items-center gap-1 text-[10px] font-bold uppercase border border-red-500/20 mr-2 transition-colors" title="Lançar como Avaria na tela de Trocas">
                               <ArrowRightLeft className="h-3.5 w-3.5" /> Avaria
-        
                             </button>
                           )}
                           <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
-                 
                           <button onClick={() => handleDelete(p)} className="p-1.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                         </div>
                        </td>
                     </tr>
-             
                   );
                 })}
               </tbody>
@@ -1046,7 +1052,6 @@ export default function Produtos() {
           <div className="p-3 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3 bg-muted/20">
             <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground font-medium">Itens por página:</span>
-  
                 <select
                     value={itemsPerPage}
                     onChange={(e) => { setItemsPerPage(Number(e.target.value)); setCurrentPage(1); }}
@@ -1054,7 +1059,6 @@ export default function Produtos() {
                 >
                     <option value={10}>10</option>
                     <option value={20}>20</option>
-           
                     <option value={30}>30</option>
                 </select>
             </div>
@@ -1065,12 +1069,10 @@ export default function Produtos() {
                 <div className="flex gap-1">
                     <button
                         onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-               
                         disabled={currentPage === 1}
                         className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:hover:bg-background transition-colors text-foreground"
                     >
                         <ChevronLeft className="h-4 w-4" />
-         
                     </button>
                     <button
                         onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
@@ -1078,7 +1080,6 @@ export default function Produtos() {
                         className="p-1.5 rounded-lg border border-border bg-background hover:bg-muted disabled:opacity-50 disabled:hover:bg-background transition-colors text-foreground"
                     >
                         <ChevronRight className="h-4 w-4" />
-                  
                     </button>
                 </div>
             </div>
@@ -1096,12 +1097,10 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                 {editing && (
                   <div className="flex gap-2">
                     <button onClick={abrirModalLote} className="h-8 px-3 bg-primary/10 text-primary border border-primary/20 rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-primary/20 transition">
-                      
                       <Boxes className="h-3.5 w-3.5" /> Cadastrar Novo Lote
                     </button>
                     <button onClick={() => { setShowHistoryModal(true); setShowForm(false); }} className="h-8 px-3 bg-muted text-muted-foreground border border-border rounded-lg font-black uppercase text-[10px] flex items-center gap-2 hover:bg-border transition">
                       <History className="h-3.5 w-3.5" /> Ver Histórico
-         
                     </button>
                   </div>
                 )}
@@ -1109,7 +1108,6 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
               <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition"><X className="h-5 w-5" /></button>
             </div>
 
-      
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Nome *</label>
@@ -1119,7 +1117,6 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
-           
                </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Marca</label>
@@ -1129,14 +1126,12 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
-           
                </div>
 
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Código de Barras</label>
                 <div className="flex gap-2">
                   <input 
-                    
                     value={form.codigo || ''} 
                     onChange={(e) => updateField('codigo', e.target.value)} 
                     onBlur={(e) => verificarCodigo(e.target.value)}
@@ -1145,32 +1140,27 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                     className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                   <button 
-          
                     type="button" 
                     onClick={() => setScanMode('produto')} 
                     disabled={!!editing}
                     className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md disabled:opacity-50 disabled:cursor-not-allowed" 
-              
                     title="Escanear com a câmera"
                   >
                     <Camera className="h-4 w-4" />
                   </button>
                   <button 
-             
                     onClick={genCodeProduto} 
                     disabled={!!editing}
                     className="px-4 bg-muted border border-border hover:border-primary/40 rounded-xl text-[10px] font-black uppercase transition text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Gerar
-  
                   </button>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
                 <div className="space-y-1">
-                  <label 
-className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Entrada</label>
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Entrada</label>
                   <input 
                     type="date" 
                     value={form.data_entrada || ''} 
@@ -1178,37 +1168,30 @@ className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
-  
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade (Lote Base)</label>
                   <input 
                     type="date" 
- 
                     value={form.data_validade || ''} 
                     onChange={(e) => updateField('data_validade', e.target.value)} 
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
-  
                 </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
                   <label className="text-[10px] font-black text-orange-500 uppercase">Custo {editing && "(Médio)"}</label>
-      
                   <input 
                     type="text" 
                     value={formatCurrency(form.custo || 0)} 
                     onChange={(e) => updateField('custo', e.target.value)} 
-                   
-                    disabled={!!editing} 
-                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-500 font-mono font-bold disabled:opacity-70 disabled:cursor-not-allowed" 
+                    className="w-full bg-transparent border-none p-0 focus:ring-0 text-orange-500 font-mono font-bold" 
                   />
                 </div>
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
-            
                   <label className="text-[10px] font-black text-blue-500 uppercase">Margem (%)</label>
                   <input 
                     type="number" 
@@ -1218,38 +1201,51 @@ className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-
                     className="w-full bg-transparent border-none p-0 focus:ring-0 text-blue-500 font-mono font-bold" 
                   />
                 </div>
-           
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
                   <label className="text-[10px] font-black text-green-500 uppercase">Venda</label>
                   <input 
                     type="text" 
                     value={formatCurrency(form.preco_venda || 0)} 
-    
                     onChange={(e) => updateField('preco_venda', e.target.value)} 
                     className="w-full bg-transparent border-none p-0 focus:ring-0 text-green-500 font-mono font-bold" 
                   />
                </div>
               </div>
 
-     
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
-                <div className="space-y-1">
+                <div className="space-y-1 relative">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Categoria</label>
                   <input 
-                     list="categorias-list" 
-     
                     value={form.categoria || ''} 
-                    onChange={(e) => updateField('categoria', e.target.value)} 
+                    onChange={(e) => {
+                      updateField('categoria', e.target.value);
+                      setShowCategoryDropdown(true);
+                    }} 
+                    onFocus={() => setShowCategoryDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
-   
-                  <datalist id="categorias-list">
-                    {categoriasExistentes.map(c => <option key={c} value={c} className="bg-card text-foreground" />)}
-                  </datalist>
+                  {showCategoryDropdown && categoriasExistentes.length > 0 && !editing && (
+                    <ul className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-[160px] overflow-y-auto scrollbar-thin scrollbar-thumb-muted">
+                      {categoriasExistentes
+                        .filter(c => c.toLowerCase().includes((form.categoria || '').toLowerCase()))
+                        .map(c => (
+                        <li 
+                          key={c} 
+                          className="p-3 text-xs font-bold uppercase cursor-pointer hover:bg-muted text-foreground" 
+                          onMouseDown={() => {
+                            updateField('categoria', c);
+                            setShowCategoryDropdown(false);
+                          }}
+                        >
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
                  <div className="space-y-1">
-     
                     <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
                   <select 
                     value={form.fornecedor || ''} 
@@ -1257,57 +1253,46 @@ className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-
                     disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none disabled:opacity-70 disabled:cursor-not-allowed"
                   >
-   
                     <option value="" className="bg-card text-foreground">Selecione...</option>
                     {fornecedores.map(f => <option key={f.nome} value={f.nome} className="bg-card text-foreground">{f.nome}</option>)}
                   </select>
                 </div>
               </div>
 
-      
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Atual</label>
                   <input 
                     type="number" 
-      
                     value={form.estoque_atual || 0} 
                     onChange={(e) => updateField('estoque_atual', Number(e.target.value))} 
                     disabled={!!editing} 
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
-   
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Unidade</label>
-                  <select 
-                    value={form.unidade || 'Und'} 
+                  <input 
+                    list="unidades-list"
+                    value={form.unidade || ''} 
                     onChange={(e) => updateField('unidade', e.target.value)} 
                     disabled={!!editing}
-                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none disabled:opacity-70 disabled:cursor-not-allowed"
-                  >
-   
-                    <option value="Und" className="bg-card text-foreground">Unidade (Und)</option>
-                    <option value="Cx" className="bg-card text-foreground">Caixa (Cx)</option>
-                    <option value="Kg" className="bg-card text-foreground">Quilo (Kg)</option>
-                    <option value="Mt" className="bg-card text-foreground">Metro (Mt)</option>
-       
-                    <option value="Lt" className="bg-card text-foreground">Litro (Lt)</option>
-                  </select>
+                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed"
+                  />
+                  <datalist id="unidades-list">
+                    {unidadesExistentes.map(u => <option key={u} value={u} className="bg-card text-foreground" />)}
+                  </datalist>
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[10px] font-black uppercase 
-text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
                 <input 
                   type="number" 
                   value={form.estoque_minimo || 0} 
                   onChange={(e) => updateField('estoque_minimo', Number(e.target.value))} 
-                  disabled={!!editing}
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
+                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground" 
                 />
-            
               </div>
 
               <div className="flex items-center gap-2 h-full pt-4">
@@ -1315,14 +1300,11 @@ text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
                   type="checkbox" 
                   checked={form.ativo !== false} 
                   onChange={(e) => updateField('ativo', e.target.checked)} 
-
-                  disabled={!!editing}
-                  className="h-5 w-5 rounded border-border bg-muted accent-primary disabled:opacity-70 disabled:cursor-not-allowed" 
+                  className="h-5 w-5 rounded border-border bg-muted accent-primary" 
                 />
                 <label className="text-xs font-black uppercase text-foreground">Produto Ativo</label>
                </div>
 
-    
               <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Observações Internas</label>
                 <textarea 
@@ -1331,7 +1313,6 @@ text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
                   disabled={!!editing}
                   rows={2} 
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary/40 text-foreground resize-none disabled:opacity-70 disabled:cursor-not-allowed" 
-         
                 />
               </div>
             </div>
@@ -1339,7 +1320,6 @@ text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
             <div className="pt-4 flex gap-3">
               <button onClick={() => setShowForm(false)} className="flex-1 h-12 rounded-xl border border-border text-xs font-black uppercase hover:bg-muted transition text-foreground">Cancelar</button>
               <button 
-         
                 onClick={handleSave} className="flex-[2] h-12 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:bg-primary/90 transition shadow-lg flex items-center justify-center gap-2">
                 <Save className="h-4 w-4" /> {editing ? 'Salvar Alterações' : 'Finalizar Cadastro'}
               </button>
@@ -1356,21 +1336,18 @@ shadow-2xl animate-in fade-in slide-in-from-bottom-4">
               <div>
                 <h3 className="text-primary font-black uppercase italic tracking-tighter">
                     {loteFormMode === 'edit' ? 'Editar Lote' : 'Novo Lote'}
-                
-</h3>
+                </h3>
                 <p className="text-[10px] text-muted-foreground font-bold uppercase">{editing.nome}</p>
               </div>
                <button onClick={() => setShowLoteForm(false)} className="text-muted-foreground hover:text-red-500 transition"><X /></button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="md:col-span-2 
-space-y-1">
+              <div className="md:col-span-2 space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground">Código de Barras do Lote</label>
                 <div className="flex gap-2">
                   <input 
                     value={loteForm.codigo_barras} 
-                  
                     onChange={(e) => setLoteForm({...loteForm, codigo_barras: e.target.value})} 
                     onBlur={(e) => verificarCodigoLote(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') verificarCodigoLote(loteForm.codigo_barras); }}
@@ -1378,18 +1355,15 @@ space-y-1">
                   />
                   <button 
                     type="button" 
-           
                     onClick={() => setScanMode('lote')} 
                     className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md"
                   >
                     <Camera className="h-4 w-4" />
-                  
-</button>
+                  </button>
                   <button 
                     onClick={genCodeLote} 
                     className="px-4 bg-muted border border-border rounded-xl text-[10px] font-black uppercase text-foreground"
                   >
-              
                     Gerar
                   </button>
                 </div>
@@ -1397,64 +1371,54 @@ space-y-1">
 
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-orange-500">Quantidade Entrada</label>
-          
                 <input 
                   type="number" 
                   value={loteForm.quantidade} 
                   onChange={(e) => setLoteForm({...loteForm, quantidade: Number(e.target.value)})} 
                   className="w-full p-3 bg-orange-500/5 border border-orange-500/20 rounded-xl text-xs font-bold outline-none focus:border-orange-500 text-foreground" 
-   
                 />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-blue-500">Custo Unitário (R$)</label>
                  <input 
-                  
                    type="text" 
                    value={formatCurrency(loteForm.custo)} 
                   onChange={(e) => setLoteForm({...loteForm, custo: parseCurrencyToNumber(e.target.value)})} 
                    className="w-full p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 text-foreground" 
                  />
-       
                </div>
              
               <div className="space-y-1">
                  <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
                 <input 
                   type="date" 
-       
                    value={loteForm.data_entrada} 
                  onChange={(e) => setLoteForm({...loteForm, data_entrada: e.target.value})} 
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" 
                 />
               </div>
-      
                 <div className="space-y-1">
                <label className="text-[10px] font-black uppercase text-muted-foreground">Data Validade</label>
                 <input 
                   type="date" 
                   value={loteForm.data_validade} 
-                
                   onChange={(e) => setLoteForm({...loteForm, data_validade: e.target.value})} 
                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary text-foreground [color-scheme:dark]" 
                 />
                </div>
               <div className="md:col-span-2 space-y-1">
-                <label 
-className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
+                <label className="text-[10px] font-black uppercase text-muted-foreground">Observação do Lote</label>
                 <textarea 
                   value={loteForm.observacao} 
                   onChange={(e) => setLoteForm({...loteForm, observacao: e.target.value})} 
                   rows={2} 
-                 
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary text-foreground resize-none" 
                 />
               </div>
             </div>
 
             <button onClick={handleSaveLote} className="w-full h-12 bg-primary text-primary-foreground rounded-xl font-black uppercase text-xs hover:bg-primary/90 transition shadow-xl flex items-center justify-center gap-2">
-              <Plus className="h-4 w-4" /> 
-{loteFormMode === 'edit' ? 'Salvar Lote' : 'Confirmar Novo Lote'}
+              <Plus className="h-4 w-4" /> {loteFormMode === 'edit' ? 'Salvar Lote' : 'Confirmar Novo Lote'}
             </button>
           </div>
         </div>
@@ -1463,38 +1427,32 @@ className="text-[10px] font-black uppercase text-muted-foreground">Observação 
       {showHistoryModal && editing && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
-     
                <div className="p-6 border-b border-border bg-muted/30 flex justify-between items-center">
               <div className="flex items-center gap-3">
                 <div className="p-2 bg-primary/10 rounded-xl">
                    <History className="h-6 w-6 text-primary" />
                 </div>
-           
                  <div>
                   <h2 className="text-xl font-black uppercase italic text-foreground leading-tight">Histórico de Lotes</h2>
                   <p className="text-[10px] text-muted-foreground font-bold uppercase tracking-widest">{editing.nome}</p>
                 </div>
                </div>
-              <button 
-onClick={() => setShowHistoryModal(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
+              <button onClick={() => setShowHistoryModal(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
             </div>
 
             <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-3 bg-muted/10 border-b border-border">
               <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-muted-foreground">Total Comprado</p>
-             
                   <p className="text-lg font-mono font-bold">{mDash.totalComprado} {editing.unidade}</p>
                </div>
                <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-muted-foreground">Em Estoque (Lotes)</p>
                   <p className="text-lg font-mono font-bold text-primary">{mDash.estoqueLotesAtual} {editing.unidade}</p>
-         
                </div>
                <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-red-500">Lotes Vencidos</p>
                   <p className="text-lg font-mono font-bold text-red-500">{mDash.vencidos}</p>
                </div>
-              
                 <div className="p-3 bg-card border border-border rounded-xl">
                   <p className="text-[9px] font-black uppercase text-orange-500">Custo mais Alto</p>
                   <p className="text-lg font-mono font-bold text-orange-500">{formatCurrency(mDash.custoMaisAlto)}</p>
@@ -1502,18 +1460,15 @@ onClick={() => setShowHistoryModal(false)} className="h-10 w-10 flex items-cente
             </div>
 
             <div className="p-4 border-b border-border flex flex-col md:flex-row gap-3">
-  
                <div className="relative flex-1">
                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <input value={historicoBusca} onChange={(e) => setHistoricoBusca(e.target.value)} placeholder="Filtrar por código ou observação..." className="w-full h-10 pl-10 pr-4 bg-muted/20 border border-border rounded-xl text-xs outline-none focus:border-primary" />
               </div>
-         
               <input type="date" value={historicoFiltroData} onChange={(e) => setHistoricoFiltroData(e.target.value)} className="h-10 px-4 bg-background text-foreground border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-primary [color-scheme:dark]" />
                <select
                   value={historicoSortOption}
                   onChange={(e) => setHistoricoSortOption(e.target.value as any)}
-                  className="h-10 px-4 bg-background text-foreground 
-border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer"
+                  className="h-10 px-4 bg-background text-foreground border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-primary appearance-none cursor-pointer"
               >
                   <option value="registro_desc" className="bg-card text-foreground">Mais Recentes</option>
                   <option value="registro_asc" className="bg-card text-foreground">Mais Antigos</option>
@@ -1524,39 +1479,32 @@ border border-border rounded-xl text-xs outline-none focus:ring-1 focus:ring-pri
               </select>
             </div>
 
-  
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
                <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
                     <th className="p-3">Código</th>
-      
                     <th className="p-3 text-center">Entrada</th>
                      <th className="p-3 text-center">Validade</th>
                     <th className="p-3 text-right">Custo</th>
                     <th className="p-3 text-right">Inicial</th>
-                 
                     <th className="p-3 text-right">Saldo</th>
                     <th className="p-3">Observação</th>
                     <th className="p-3 text-right">Ação</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y 
-divide-border">
+                <tbody className="divide-y divide-border">
                   {historicoLotesFiltrados.length === 0 ? (
                     <tr><td colSpan={8} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado.</td></tr>
                   ) : (
                     historicoLotesFiltrados.map((l) => {
                       const lQtdAtual = Number(l.quantidade_atual || l.quantidade);
-  
                       const isEsgotado = lQtdAtual <= 0;
                       const isVencido = getDaysDiff(l.data_validade) < 0 && !isEsgotado;
                       return (
-                       
                         <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
                           <td className="p-3 font-mono font-bold text-primary">{l.codigo_barras || '-'}</td>
                           <td className="p-3 text-center">{new Date(l.data_entrada).toLocaleDateString('pt-BR')}</td>
-                         
                           <td className={`p-3 text-center font-bold ${isVencido ? 'text-red-500' : ''}`}>
                             {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                           </td>
@@ -1567,7 +1515,6 @@ divide-border">
                           <td className="p-3 text-right">
                             <button onClick={() => handleEditarLoteHistorico(l)} className="p-1.5 rounded hover:bg-primary/20 bg-primary/10 text-primary transition-colors">
                               <Pencil className="h-3.5 w-3.5" />
-  
                             </button>
                           </td>
                         </tr>
@@ -1582,49 +1529,41 @@ divide-border">
       )}
 
       {showCodigoConflito && codigoConflitoData && (
-      
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
             <div className="p-6 border-b border-border bg-muted/30 flex justify-between items-center">
               <div>
                 <h2 className="text-xl font-black uppercase italic text-foreground leading-tight text-red-500 flex items-center gap-2">
-       
                    <AlertTriangle className="h-6 w-6" /> Atenção! Código já cadastrado
                 </h2>
                 <p className="text-sm mt-2 text-foreground">
                   Produto encontrado: <span className="uppercase underline animate-pulse font-black text-red-500 bg-red-500/10 px-2 py-1 rounded">{codigoConflitoData.produto.nome}</span>
                 </p>
-  
                 {codigoConflitoData.lotes.length > 1 && (
                   <p className="text-sm mt-2 text-foreground">
                     <span className="uppercase underline animate-pulse font-black text-red-500 bg-red-500/10 px-2 py-1 rounded">{codigoConflitoData.lotes.length} LOTES CADASTRADOS</span>
                  </p>
-             
                 )}
               </div>
               <button onClick={() => setShowCodigoConflito(false)} className="h-10 w-10 flex items-center justify-center rounded-full hover:bg-red-500/10 text-muted-foreground hover:text-red-500 transition-all"><X /></button>
             </div>
             
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
-              
-<table className="w-full text-xs text-left">
+              <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
                     <th className="p-3">Código</th>
                     <th className="p-3 text-center">Entrada</th>
-              
                     <th className="p-3 text-center">Validade</th>
                     <th className="p-3 text-right">Custo</th>
                     <th className="p-3 text-right">Inicial</th>
                     <th className="p-3 text-right">Saldo</th>
                     <th className="p-3">Observação</th>
-     
                      <th className="p-3 text-right">Ação</th>
                   </tr>
                  </thead>
                 <tbody className="divide-y divide-border">
                    {codigoConflitoData.lotes.map(l => {
-         
                     const lQtdAtual = Number(l.quantidade_atual || l.quantidade);
                     const isEsgotado = lQtdAtual <= 0;
                     const isVencido = getDaysDiff(l.data_validade) < 0 && !isEsgotado;
@@ -1632,11 +1571,9 @@ divide-border">
                       <tr key={l.id} className={`hover:bg-muted/30 transition-colors ${isEsgotado ? 'opacity-40' : ''} ${isVencido ? 'bg-red-500/5' : ''}`}>
                         <td className="p-3 font-mono font-bold text-primary">{l.codigo_barras || '-'}</td>
                         <td className="p-3 text-center">{new Date(l.data_entrada).toLocaleDateString('pt-BR')}</td>
-       
                          <td className={`p-3 text-center font-bold ${isVencido ? 'text-red-500' : ''}`}>
                           {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                         </td>
-                    
                         <td className="p-3 text-right font-mono">{formatCurrency(l.custo)}</td>
                         <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
                         <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
@@ -1644,13 +1581,11 @@ divide-border">
                         <td className="p-3 text-right">
                           <button onClick={() => handleEditarLoteConflito(l, codigoConflitoData.produto)} className="p-1.5 rounded bg-primary/10 text-primary hover:bg-primary/20"><Pencil className="h-3.5 w-3.5" /></button>
                         </td>
-            
                       </tr>
                     )
                   })}
                   {codigoConflitoData.lotes.length === 0 && (
-                    <tr><td colSpan={8} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado 
-para este produto.</td></tr>
+                    <tr><td colSpan={8} className="p-8 text-center text-muted-foreground font-bold uppercase italic">Nenhum lote registrado para este produto.</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1658,7 +1593,6 @@ para este produto.</td></tr>
 
             <div className="p-4 border-t border-border flex justify-end gap-3 bg-muted/10">
                <button onClick={() => {
- 
                   setEditing(codigoConflitoData.produto);
                   setForm({ ...codigoConflitoData.produto });
                   setLoteFormMode('new');
@@ -1668,7 +1602,6 @@ para este produto.</td></tr>
                       custo: 0,
                       data_entrada: new Date().toISOString().split('T')[0],
                       data_validade: '',
-  
                       observacao: '',
                       codigo_barras: codigoConflitoData.produto.codigo || ''
                   });
@@ -1683,14 +1616,12 @@ para este produto.</td></tr>
         </div>
       )}
 
-      {scanMode && 
-      (
+      {scanMode && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/90 p-4">
           <div className="w-full max-w-md bg-card rounded-2xl overflow-hidden relative border border-border shadow-2xl">
             <div className="p-4 border-b border-border flex justify-between items-center bg-muted/30">
               <h3 className="text-foreground font-black uppercase text-xs">Escanear Código ({scanMode === 'produto' ? 'Produto' : 'Lote'})</h3>
-              <button onClick={() => setScanMode(null)} className="text-muted-foreground hover:text-red-500 
-transition"><X /></button>
+              <button onClick={() => setScanMode(null)} className="text-muted-foreground hover:text-red-500 transition"><X /></button>
             </div>
             <div id="reader" className="w-full"></div>
             <div className="p-4 text-center text-muted-foreground text-[10px] font-bold uppercase">
@@ -1698,7 +1629,6 @@ transition"><X /></button>
             </div>
           </div>
         </div>
-    
       )}
     </div>
   );
