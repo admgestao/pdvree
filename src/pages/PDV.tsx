@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, User, Percent, DollarSign,
-  FileText, CreditCard, X, Check, AlertCircle, Wallet, Info, UserCircle,
-  Lock, Unlock
+  FileText, CreditCard, X, Check, AlertCircle, Info, UserCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -13,6 +12,7 @@ interface CartItem {
   id: string; 
   nome: string;
   codigo: string;
+  marca?: string;
   price: number;
   preco_custo: number;
   quantity: number;
@@ -27,12 +27,20 @@ interface Produto {
   id: string;
   nome: string;
   codigo: string;
+  marca?: string;
   preco_venda: number;
   preco_custo: number;
   estoque_atual: number;
   categoria: string;
   lote_id?: string;
   lote_codigo?: string;
+  lotes?: { 
+    id: string;
+    codigo: string;
+    data_validade?: string;
+    quantidade_atual?: number;
+    observacao?: string;
+  }[];
 }
 
 interface Pessoa {
@@ -83,8 +91,9 @@ export default function PDV() {
   const [vendedorId, setVendedorId] = useState(() => {
     return localStorage.getItem('@pdv:vendedor_id') || '';
   });
-  const [loadingInitial, setLoadingInitial] = useState(true);
-  const [caixaAberto, setCaixaAberto] = useState(false);
+
+  // Novo estado para o modal de seleção de lotes
+  const [lotSelectionItem, setLotSelectionItem] = useState<Produto | null>(null);
 
   const darkScrollbarClass = "scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent overflow-y-auto";
   const customScrollStyles = {
@@ -94,50 +103,11 @@ export default function PDV() {
   const fCurrency = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
   useEffect(() => {
-    loadCaixaStatus();
     loadFormas();
     loadClientes();
     loadPromocoes();
     loadVendedores();
   }, []);
-
-  async function loadCaixaStatus() {
-    try {
-      const hoje = new Date().toLocaleDateString('en-CA');
-      const { data } = await supabase
-        .from('caixa_movimentos')
-        .select('tipo')
-        .gte('criado_em', `${hoje}T00:00:00`)
-        .lte('criado_em', `${hoje}T23:59:59`)
-        .order('criado_em', { ascending: false });
-      if (data && data.length > 0) {
-        // Encontra o último movimento que altera o status (abertura ou fechamento)
-        const ultimoStatus = data.find(m => m.tipo === 'abertura' || m.tipo === 'fechamento');
-        setCaixaAberto(ultimoStatus?.tipo === 'abertura');
-      } else {
-        setCaixaAberto(false);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingInitial(false);
-    }
-  }
-
-  async function handleQuickAbertura() {
-    const valor = prompt("Informe o valor de abertura (Fundo de Reserva):", "0.00");
-    if (valor !== null) {
-      const { error } = await supabase.from('caixa_movimentos').insert({
-        tipo: 'abertura',
-        valor: Number(valor),
-        descricao: 'Abertura rápida via PDV',
-        usuario_id: user?.name || 'Sistema'
-      });
-      if (error) return toast.error('Erro ao abrir caixa: ' + error.message);
-      toast.success('Caixa aberto com sucesso!');
-      loadCaixaStatus();
-    }
-  }
 
   async function loadVendedores() {
     const { data } = await supabase.from('usuarios').select('id, nome_usuario');
@@ -166,9 +136,13 @@ export default function PDV() {
   const searchProducts = useCallback(async (term: string) => {
     const query = term.trim();
     if (!query) { setProdutos([]); setShowResults(false); return; }
+    
     try {
+      // Busca inteligente: substitui espaços por % para encontrar termos em qualquer ordem/posição
+      const searchPattern = `%${query.replace(/\s+/g, '%')}%`;
+
       const { data: pData } = await supabase.from('produtos').select('*')
-        .or(`nome.ilike.%${query}%,codigo.ilike.%${query}%,categoria.ilike.%${query}%`)
+        .or(`nome.ilike.${searchPattern},codigo.ilike.${searchPattern},categoria.ilike.${searchPattern}`)
         .limit(10);
       
       const { data: lData } = await supabase.from('produto_lotes')
@@ -176,33 +150,86 @@ export default function PDV() {
         .ilike('codigo_barras', `%${query}%`)
         .limit(5);
 
-      let combined: Produto[] = (pData || []).map(p => ({
-        id: p.id, nome: p.nome, codigo: p.codigo || '',
-        preco_venda: Number(p.preco_venda) || 0,
-        preco_custo: Number(p.preco_custo) || 0,
-        estoque_atual: Number(p.estoque_atual) || 0,
-        categoria: p.categoria || ''
-      }));
+      // Busca os lotes dos produtos já encontrados na pesquisa acima
+      const pIds = (pData || []).map(p => p.id);
+      let lotesAdicionais: any[] = [];
+      if (pIds.length > 0) {
+        // Agora buscando campos adicionais necessários para o modal de lotes
+        const { data: lExtras } = await supabase.from('produto_lotes')
+          .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao')
+          .in('produto_id', pIds);
+        lotesAdicionais = lExtras || [];
+      }
 
+      const produtosMap = new Map<string, Produto>();
+
+      // 1. Adiciona os produtos base
+      (pData || []).forEach(p => {
+        produtosMap.set(p.id, {
+          id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
+          preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
+          estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
+          lotes: []
+        });
+      });
+
+      // Vincula os lotes adicionais aos produtos para evitar duplicações
+      lotesAdicionais.forEach(lote => {
+        const prod = produtosMap.get(lote.produto_id);
+        if (prod && prod.lotes) {
+           prod.lotes.push({ 
+             id: lote.id, 
+             codigo: lote.codigo_barras,
+             data_validade: lote.data_validade,
+             quantidade_atual: lote.quantidade_atual,
+             observacao: lote.observacao
+           });
+        }
+      });
+
+      // 2. Lógica aprimorada para os lotes buscados diretamente via código de barras
       if (lData) {
         lData.forEach(lote => {
-          if (lote.produtos && !combined.find(p => p.id === lote.produtos.id && p.lote_id === lote.id)) {
-            combined.push({
-              id: lote.produtos.id,
-              nome: lote.produtos.nome, // Removido o sufixo (LOTE: ...)
-              codigo: lote.produtos.codigo || '',
-              preco_venda: Number(lote.produtos.preco_venda) || 0,
-              preco_custo: Number(lote.produtos.preco_custo) || 0,
-              estoque_atual: Number(lote.produtos.estoque_atual) || 0,
-              categoria: lote.produtos.categoria || '',
-              lote_id: lote.id,
-              lote_codigo: lote.codigo_barras
-            });
+          if (lote.produtos) {
+            let prod = produtosMap.get(lote.produtos.id);
+            
+            // Se o produto desse lote não estava no map, criamos ele
+            if (!prod) {
+              prod = {
+                id: lote.produtos.id,
+                nome: lote.produtos.nome,
+                codigo: lote.produtos.codigo || '',
+                marca: lote.produtos.marca || '',
+                preco_venda: Number(lote.produtos.preco_venda) || 0,
+                preco_custo: Number(lote.produtos.preco_custo) || 0,
+                estoque_atual: Number(lote.produtos.estoque_atual) || 0,
+                categoria: lote.produtos.categoria || '',
+                lotes: []
+              };
+              produtosMap.set(prod.id, prod);
+            }
+
+            // Adiciona a informação do lote na lista interna do produto
+            if (prod.lotes && !prod.lotes.find(l => l.id === lote.id)) {
+              prod.lotes.push({
+                id: lote.id,
+                codigo: lote.codigo_barras,
+                data_validade: lote.data_validade,
+                quantidade_atual: lote.quantidade_atual,
+                observacao: lote.observacao
+              });
+            }
+
+            // Se o código digitado for exatamente o código de barras deste lote, deixamos ele selecionado como padrão para inserção
+            if (query === lote.codigo_barras) {
+              prod.lote_id = lote.id;
+              prod.lote_codigo = lote.codigo_barras;
+            }
           }
         });
       }
 
-      setProdutos(combined);
+      setProdutos(Array.from(produtosMap.values()));
       setShowResults(true);
     } catch (error) { toast.error("Erro ao buscar produtos"); }
   }, []);
@@ -216,29 +243,37 @@ export default function PDV() {
     e.preventDefault();
     const query = search.trim();
     if (!query) return;
-    let { data: prod } = await supabase.from('produtos').select('*').eq('codigo', query).eq('ativo', true).maybeSingle();
+
+    // Tenta primeiro validar se é o escaneamento exato de um lote
+    const { data: lote } = await supabase.from('produto_lotes').select('*, produtos(*)').eq('codigo_barras', query).maybeSingle();
+    
+    let prod = null;
     let loteId = undefined;
     let loteCodigo = undefined;
-    if (!prod) {
-      const { data: lote } = await supabase.from('produto_lotes').select('*, produtos(*)').eq('codigo_barras', query).maybeSingle();
-      if (lote && lote.produtos) {
-        prod = lote.produtos;
-        loteId = lote.id;
-        loteCodigo = lote.codigo_barras;
-      }
+
+    if (lote && lote.produtos) {
+      prod = lote.produtos;
+      loteId = lote.id;
+      loteCodigo = lote.codigo_barras;
+    } else {
+      // Se não achar via lote, busca no produto principal
+      const { data: p } = await supabase.from('produtos').select('*').eq('codigo', query).eq('ativo', true).maybeSingle();
+      prod = p;
     }
 
     if (prod) {
       addToCart({
         id: prod.id, 
-        nome: prod.nome, // Removido o sufixo (LOTE: ...)
+        nome: prod.nome, 
         codigo: prod.codigo || '',
+        marca: prod.marca || '',
         preco_venda: Number(prod.preco_venda) || 0,
         preco_custo: Number(prod.preco_custo) || 0,
         estoque_atual: Number(prod.estoque_atual) || 0,
         categoria: prod.categoria || '',
         lote_id: loteId,
-        lote_codigo: loteCodigo
+        lote_codigo: loteCodigo,
+        lotes: [] // Busca exata vai direto para o carrinho
       });
     } else {
       toast.error('Produto ou Lote não encontrado');
@@ -250,8 +285,26 @@ export default function PDV() {
       toast.error('Produto sem estoque disponível');
       return; 
     }
-    
+
+    // Se o produto foi clicado na lista manual e possui MAIS de 1 lote e nenhum lote exato foi bipado
+    if (!product.lote_id && product.lotes && product.lotes.length > 1) {
+      setLotSelectionItem(product);
+      return; // Interrompe para abrir o modal
+    }
+
+    // Se tiver apenas 1 lote, autoseleciona ele (caso já não esteja selecionado)
+    const finalProduct = { ...product };
+    if (!finalProduct.lote_id && finalProduct.lotes && finalProduct.lotes.length === 1) {
+      finalProduct.lote_id = finalProduct.lotes[0].id;
+      finalProduct.lote_codigo = finalProduct.lotes[0].codigo;
+    }
+
+    executeAddToCart(finalProduct);
+  };
+
+  const executeAddToCart = (product: Produto) => {
     const price = promocoes[product.id] || product.preco_venda;
+
     setCart((prev) => {
       const existing = prev.find((i) => i.id === product.id && i.lote_id === product.lote_id);
       if (existing) {
@@ -267,6 +320,7 @@ export default function PDV() {
         id: product.id, 
         nome: product.nome, 
         codigo: product.codigo,
+        marca: product.marca,
         price, 
         preco_custo: product.preco_custo, 
         quantity: 1, 
@@ -277,8 +331,19 @@ export default function PDV() {
         lote_codigo: product.lote_codigo
       }];
     });
+
     setSearch('');
     setShowResults(false);
+  };
+
+  const handleSelectSpecificLot = (product: Produto, lote: any) => {
+    const productWithSpecificLot = {
+      ...product,
+      lote_id: lote.id,
+      lote_codigo: lote.codigo
+    };
+    executeAddToCart(productWithSpecificLot);
+    setLotSelectionItem(null);
   };
 
   const updateQty = (cartItemId: string, delta: number) => {
@@ -312,7 +377,7 @@ export default function PDV() {
   const totalCustoItens = cart.reduce((sum, item) => sum + (item.preco_custo * item.quantity), 0);
   
   const descontoGeralVal = descontoGeralTipo === 'percent' ?
-  totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
+    totalItensComDescontoIndividual * (descontoGeral / 100) : descontoGeral;
   
   const totalDescontoAplicado = descontoDosItens + descontoGeralVal;
   const totalBruto = Math.max(0, totalItensComDescontoIndividual - descontoGeralVal + (Number(custoAdicional) || 0));
@@ -364,6 +429,7 @@ export default function PDV() {
         troco, 
         observacao,
       }).select('id').single();
+      
       if (vendaErr) throw vendaErr;
 
       const itensParaSalvar = cart.map(item => ({
@@ -376,11 +442,13 @@ export default function PDV() {
         desconto_tipo_item: item.discountType,
         total: getItemTotal(item)
       }));
+      
       const { error: itensErr } = await supabase.from('vendas_itens').insert(itensParaSalvar);
       if (itensErr) throw itensErr;
 
       for (const item of cart) {
         await supabase.from('produtos').update({ estoque_atual: item.stock - item.quantity }).eq('id', item.id);
+        
         if (item.lote_id) {
           const { data: lote } = await supabase.from('produto_lotes').select('quantidade_atual, quantidade').eq('id', item.lote_id).single();
           if (lote) {
@@ -417,38 +485,6 @@ export default function PDV() {
       toast.error('Erro ao finalizar: ' + err.message);
     }
     setSaving(false);
-  }
-
-  if (loadingInitial) {
-    return <div className="h-screen flex items-center justify-center bg-background italic font-medium">Verificando caixa...</div>;
-  }
-
-  if (!caixaAberto) {
-    return (
-      <div className="h-[calc(100vh-3rem)] flex items-center justify-center bg-background p-4 animate-in fade-in duration-500">
-        <div className="w-full max-w-lg space-y-6 text-center">
-          <div className="inline-flex p-6 rounded-full bg-red-500/10 border border-red-500/20 mb-4">
-            <Lock className="h-16 w-16 text-red-500 animate-bounce" />
-          </div>
-          <h2 className="text-3xl font-black tracking-tighter uppercase text-foreground">Vendas Bloqueadas</h2>
-          <p className="text-muted-foreground text-sm max-w-sm mx-auto">
-            O terminal de vendas está desativado pois o caixa do dia ainda não foi aberto ou já foi encerrado.
-          </p>
-          <div className="bg-card border border-border p-8 rounded-3xl shadow-2xl space-y-6">
-             <div className="flex items-center justify-center gap-2 mb-2">
-                <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Status: Caixa Fechado</span>
-             </div>
-             <button 
-              onClick={handleQuickAbertura}
-              className="w-full py-5 rounded-2xl bg-primary text-primary-foreground font-black uppercase text-sm shadow-xl shadow-primary/20 hover:scale-[1.02] transition-transform flex items-center justify-center gap-3"
-            >
-              <Unlock className="h-5 w-5" /> Abrir Caixa Agora
-            </button>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   return (
@@ -488,9 +524,18 @@ export default function PDV() {
                     className={`w-full flex items-center justify-between px-3 py-2.5 hover:bg-accent/50 text-left border-b border-border last:border-0 ${p.estoque_atual <= 0 ? 'bg-red-500/20 border-red-500/40' : ''}`}>
                     <div>
                       <p className={`text-sm font-bold ${p.estoque_atual <= 0 ? 'text-red-500 underline' : ''}`}>{p.nome}</p>
-                      <p className="text-[10px] text-muted-foreground uppercase">
-                        {p.categoria} • {p.estoque_atual <= 0 ? <span className="text-red-600 font-black animate-pulse">⚠️ SEM ESTOQUE</span> : `Estoque: ${p.estoque_atual}`}
+                      
+                      <p className="text-[10px] text-muted-foreground uppercase mt-0.5">
+                        {p.categoria} {p.marca ? ` • ${p.marca}` : ''} • {p.estoque_atual <= 0 ? <span className="text-red-600 font-black animate-pulse">⚠️ SEM ESTOQUE</span> : `Estoque: ${p.estoque_atual}`}
                       </p>
+
+                      {p.lotes && p.lotes.length > 0 && (
+                        <p className="text-[10px] text-blue-500 font-bold mt-0.5">
+                          {p.lotes.length === 1 
+                            ? `LOTE: ${p.lotes[0].codigo}` 
+                            : `${p.lotes.length} LOTES DISPONÍVEIS`}
+                        </p>
+                      )}
                     </div>
                     <span className={`text-sm font-mono font-semibold ${p.estoque_atual <= 0 ? 'text-red-400' : 'text-primary'}`}>{fCurrency(p.preco_venda)}</span>
                   </button>
@@ -518,7 +563,12 @@ export default function PDV() {
                 <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.nome}</p>
-                    <p className="text-[10px] text-muted-foreground">Estoque: {item.stock} • Unit: {fCurrency(item.price)}</p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {item.marca ? `${item.marca} • ` : ''}Estoque: {item.stock} • Unit: {fCurrency(item.price)}
+                    </p>
+                    {item.lote_codigo && (
+                      <p className="text-[10px] text-blue-500 font-medium">Lote Bipado: {item.lote_codigo}</p>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <div className="flex items-center gap-1.5 border-r border-border pr-3">
@@ -543,7 +593,7 @@ export default function PDV() {
                   </div>
                 </div>
               </div>
-              ))
+            ))
           )}
         </div>
       </div>
@@ -690,6 +740,61 @@ export default function PDV() {
           </div>
         </div>
       </div>
+
+      {/* Modal de Seleção de Lote Múltiplo */}
+      {lotSelectionItem && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4 shadow-xl animate-in zoom-in-95">
+            <div className="flex justify-between items-center border-b border-border pb-3">
+              <div>
+                <h2 className="text-lg font-bold text-primary">Múltiplos Lotes Encontrados</h2>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  Selecione o lote desejado para <span className="font-bold text-foreground">{lotSelectionItem.nome}</span>
+                </p>
+              </div>
+              <button onClick={() => setLotSelectionItem(null)} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className={`max-h-[60vh] overflow-y-auto space-y-2 pr-1 ${darkScrollbarClass}`} style={customScrollStyles}>
+              {lotSelectionItem.lotes?.map(lote => (
+                <button
+                  key={lote.id}
+                  onClick={() => handleSelectSpecificLot(lotSelectionItem, lote)}
+                  className="w-full text-left p-3 rounded-lg border border-border bg-secondary/50 hover:bg-secondary hover:border-primary/50 transition-all flex flex-col gap-1.5 group"
+                >
+                  <div className="flex justify-between items-start w-full">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-sm text-primary group-hover:underline">Cód: {lote.codigo}</span>
+                      {lote.data_validade && (
+                        <span className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1">
+                          Validade: <span className="font-medium text-foreground">{lote.data_validade.split('T')[0].split('-').reverse().join('/')}</span>
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded border border-border shadow-sm">
+                      Estoque: <span className={Number(lote.quantidade_atual) <= 0 ? 'text-red-500' : 'text-green-500'}>{lote.quantidade_atual || 0}</span>
+                    </span>
+                  </div>
+                  {lote.observacao && (
+                    <div className="mt-1 p-2 bg-background/50 rounded border border-border/50 text-xs italic text-muted-foreground flex items-start gap-1.5">
+                      <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" />
+                      <span>{lote.observacao}</span>
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+            
+            <div className="flex justify-end pt-2 border-t border-border">
+              <button onClick={() => setLotSelectionItem(null)} className="h-9 px-4 rounded-lg border border-border text-sm font-medium hover:bg-secondary">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showFinalize && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
