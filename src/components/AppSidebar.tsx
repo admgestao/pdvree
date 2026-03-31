@@ -76,32 +76,32 @@ export function AppSidebar() {
 
   const handleLogoutWithCheck = async () => {
     try {
-      const hoje = new Date().toLocaleDateString('en-CA');
+      const currentUserName = user?.name || user?.nome_completo || user?.nome_usuario || 'Sistema';
 
-      // BUSCA O ÚLTIMO STATUS REAL (ABERTURA OU FECHAMENTO)
+      // BUSCA O ÚLTIMO STATUS DO USUÁRIO LOGADO (ABERTURA OU FECHAMENTO)
       const { data, error } = await supabase
         .from('caixa_movimentos')
         .select('tipo')
-        .in('tipo', ['abertura', 'fechamento']) 
-        .gte('criado_em', `${hoje}T00:00:00`)
-        .lte('criado_em', `${hoje}T23:59:59`)
+        .eq('usuario_id', currentUserName)
+        .in('tipo', ['abertura', 'fechamento'])
         .order('criado_em', { ascending: false })
         .limit(1);
 
       if (error) throw error;
 
-      const ultimoMovimento = data && data.length > 0 ? data[0].tipo : null;
+      const ultimoMovimento = data && data.length > 0 ? data[0].tipo.toLowerCase().trim() : 'fechamento';
 
-      // Se o último registro de status for 'abertura', impede o logout direto
+      // Se o último movimento for abertura (caixa ainda aberto), impede o logout
       if (ultimoMovimento === 'abertura') {
         const confirmar = window.confirm(
-          "ATENÇÃO: O caixa ainda está aberto!\n\nVocê deve realizar o fechamento antes de sair.\n\nDeseja ir para a tela de Caixa agora?"
+          "ATENÇÃO: O caixa ainda não foi fechado!\n\n" +
+          "Você só pode sair do sistema após realizar o FECHAMENTO do caixa.\n\n" +
+          "Deseja ir para a tela de Caixa agora?"
         );
         if (confirmar) {
           navigate('/financeiro/caixa');
-          return;
         }
-        return; 
+        return;
       }
 
       await logout();
@@ -241,13 +241,13 @@ export function AppSidebar() {
           <div className="flex items-center justify-between w-full gap-2 px-1">
             <div className="flex flex-col min-w-0 flex-1">
               <span className="text-sm font-semibold text-foreground truncate">
-                {user?.name || user?.nome_completo || 'Usuário'} 
+                {user?.name || user?.nome_completo || 'Usuário'}
               </span>
               <span className="text-[10px] text-muted-foreground capitalize truncate">
                 {user?.nome_usuario === 'planex' ? 'Acesso Master' : (user?.role || 'Acesso Padrão')}
               </span>
             </div>
-            
+
             <button
               onClick={handleLogoutWithCheck}
               className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-colors shrink-0"
