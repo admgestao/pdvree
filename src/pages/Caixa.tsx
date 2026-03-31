@@ -18,6 +18,15 @@ interface Movimento {
   criado_em: string;
 }
 
+// Função para gerar data local no formato correto
+const getTodayString = () => {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export default function Caixa() {
   const { user } = useAuth();
   const [movimentos, setMovimentos] = useState<Movimento[]>([]);
@@ -30,8 +39,8 @@ export default function Caixa() {
 
   const [filterUser, setFilterUser] = useState('');
   const [dateRange, setDateRange] = useState({
-    start: new Date().toISOString().split('T')[0],
-    end: new Date().toISOString().split('T')[0]
+    start: getTodayString(), // Usando função local para data correta
+    end: getTodayString()
   });
 
   const currentUserName = user?.name || user?.nome_completo || user?.nome_usuario || 'Sistema';
@@ -108,6 +117,7 @@ export default function Caixa() {
       valor: Number(valor) || 0,
       descricao: descricao.trim() || tipo,
       usuario_id: currentUserName,
+      criado_em: new Date().toISOString(), // CORREÇÃO: Força envio da data/hora local correta
     };
 
     const { error } = await supabase.from('caixa_movimentos').insert(payload);
@@ -244,7 +254,11 @@ export default function Caixa() {
         </div>
 
         <button
-          onClick={() => { setFilterUser(''); setDateRange({ start: new Date().toISOString().split('T')[0], end: new Date().toISOString().split('T')[0] }); }}
+          onClick={() => { 
+            setFilterUser(''); 
+            const today = getTodayString();
+            setDateRange({ start: today, end: today }); 
+          }}
           className="bg-secondary hover:bg-secondary/80 p-2.5 rounded-lg transition-colors border border-border"
         >
           <X className="h-4 w-4 text-muted-foreground" />
@@ -305,7 +319,9 @@ export default function Caixa() {
                         <span className="text-[10px] font-bold text-primary/80">{m.usuario_id}</span>
                         <span className="text-[10px] text-muted-foreground">•</span>
                         <span className="text-[10px] text-muted-foreground font-mono">
-                          {new Date(m.criado_em).toLocaleString('pt-BR')}
+                          {new Date(m.criado_em).toLocaleString('pt-BR', {
+                            timeZone: 'America/Sao_Paulo', // MELHORIA: Força exibição no fuso horário brasileiro
+                          })}
                         </span>
                       </div>
                     </div>
