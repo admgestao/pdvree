@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
-import { 
-  Wallet, Plus, Search, DollarSign, ArrowDownLeft, ArrowUpRight, 
-  Lock, Calendar, User as UserIcon, Filter, X, ChevronRight, Activity, Unlock, AlignLeft,
+import {
+  Wallet, Plus, Search, DollarSign, ArrowDownLeft, ArrowUpRight,
+  Lock, Calendar, User as UserIcon, X, Activity, Unlock, AlignLeft,
   LucideIcon
 } from 'lucide-react';
 import { supabase, logAction } from '@/lib/supabase';
@@ -23,7 +23,7 @@ export default function Caixa() {
   const [movimentos, setMovimentos] = useState<Movimento[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  
+
   const [tipo, setTipo] = useState('abertura');
   const [valor, setValor] = useState(0);
   const [descricao, setDescricao] = useState('');
@@ -34,24 +34,41 @@ export default function Caixa() {
     end: new Date().toISOString().split('T')[0]
   });
 
-  const statsDoDia = useMemo(() => {
-    const dataReferencia = dateRange.start || new Date().toISOString().split('T')[0];
-    const movsDoDia = movimentos.filter(m => m.criado_em.startsWith(dataReferencia));
-    
-    const ultimoStatus = movsDoDia.find(m => {
-      const tipoNorm = m.tipo.toLowerCase().trim();
-      return tipoNorm === 'abertura' || tipoNorm === 'fechamento';
-    });
-    
-    const jaAbriu = ultimoStatus?.tipo.toLowerCase().trim() === 'abertura';
-    const jaFechou = ultimoStatus?.tipo.toLowerCase().trim() === 'fechamento';
+  const currentUserName = user?.name || user?.nome_completo || user?.nome_usuario || 'Sistema';
 
-    return { jaAbriu, jaFechou };
-  }, [movimentos, dateRange.start]);
+  // Calcula o status do caixa baseado no último movimento de abertura/fechamento do usuário
+  const statusCaixa = useMemo(() => {
+    // Busca movimentos do usuário logado, apenas abertura e fechamento
+    const movsUsuario = movimentos.filter(m => 
+      m.usuario_id === currentUserName && 
+      ['abertura', 'fechamento'].includes(m.tipo.toLowerCase().trim())
+    );
 
-  const caixaAberto = statsDoDia.jaAbriu && !statsDoDia.jaFechou;
+    // Ordena por data decrescente e pega o último
+    const ultimoMovimento = movsUsuario
+      .sort((a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime())[0];
 
-  useEffect(() => { load(); }, [filterUser, dateRange]);
+    const jaFezAbertura = !!ultimoMovimento;
+    const caixaAberto = ultimoMovimento?.tipo.toLowerCase().trim() === 'abertura';
+    const precisaAbrir = !jaFezAbertura;
+
+    return { jaFezAbertura, caixaAberto, precisaAbrir };
+  }, [movimentos, currentUserName]);
+
+  const { caixaAberto, precisaAbrir } = statusCaixa;
+  const isObrigatorio = precisaAbrir && tipo === 'abertura';
+
+  useEffect(() => { 
+    load(); 
+  }, [filterUser, dateRange]);
+
+  useEffect(() => {
+    // Se precisar abrir o caixa, força o modal
+    if (!loading && precisaAbrir) {
+      setShowForm(true);
+      setTipo('abertura');
+    }
+  }, [loading, precisaAbrir]);
 
   async function load() {
     setLoading(true);
@@ -81,28 +98,31 @@ export default function Caixa() {
   }
 
   async function handleSave() {
-    if (valor <= 0 && tipo !== 'fechamento') { 
-      toast.error('Informe um valor válido'); 
-      return; 
+    if (valor <= 0 && tipo !== 'fechamento') {
+      toast.error('Informe um valor válido');
+      return;
     }
 
     const payload = {
       tipo,
       valor: Number(valor) || 0,
       descricao: descricao.trim() || tipo,
-      usuario_id: user?.name || 'Sistema', 
+      usuario_id: currentUserName,
     };
 
     const { error } = await supabase.from('caixa_movimentos').insert(payload);
-    
-    if (error) { 
-      toast.error('Erro ao registrar: ' + error.message); 
-      return; 
+    if (error) {
+      toast.error('Erro ao registrar: ' + error.message);
+      return;
     }
 
-    await logAction(user?.name || 'Sistema', `caixa_${tipo}`, `Valor: R$ ${valor} | Desc: ${payload.descricao}`);
+    await logAction(
+      currentUserName,
+      `caixa_${tipo}`,
+      `Valor: R$ ${valor} | Desc: ${payload.descricao}`
+    );
     toast.success(`${tipo.toUpperCase()} registrado com sucesso!`);
-    
+
     setShowForm(false);
     setValor(0);
     setDescricao('');
@@ -112,24 +132,24 @@ export default function Caixa() {
   const totalEntradas = movimentos
     .filter(m => ['abertura', 'entrada'].includes(m.tipo.toLowerCase().trim()))
     .reduce((s, m) => s + Number(m.valor), 0);
-    
+
   const totalSaidas = movimentos
     .filter(m => ['sangria', 'saida', 'fechamento'].includes(m.tipo.toLowerCase().trim()))
     .reduce((s, m) => s + Number(m.valor), 0);
-    
+
   const saldo = totalEntradas - totalSaidas;
 
-  const iconMap: Record<string, LucideIcon> = { 
-    abertura: Unlock, 
-    sangria: ArrowDownLeft, 
-    fechamento: Lock, 
-    entrada: ArrowUpRight, 
-    saida: ArrowDownLeft 
+  const iconMap: Record<string, LucideIcon> = {
+    abertura: Unlock,
+    sangria: ArrowDownLeft,
+    fechamento: Lock,
+    entrada: ArrowUpRight,
+    saida: ArrowDownLeft
   };
 
   return (
     <div className="p-4 md:p-6 space-y-6 bg-background min-h-screen text-foreground transition-all duration-300">
-      
+
       <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4">
         <div>
           <div className="flex items-center gap-3">
@@ -149,11 +169,11 @@ export default function Caixa() {
           <p className="text-muted-foreground text-[11px] mt-1 uppercase tracking-wider">Gestão de entradas, saídas e conferência</p>
         </div>
 
-        <button 
+        <button
           onClick={() => {
             setTipo(caixaAberto ? 'entrada' : 'abertura');
             setShowForm(true);
-          }} 
+          }}
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:opacity-90 text-primary-foreground text-xs font-black transition-all shadow-lg shadow-primary/20"
         >
           <Plus className="h-4 w-4" /> NOVA MOVIMENTAÇÃO
@@ -192,18 +212,18 @@ export default function Caixa() {
             <Calendar className="h-3 w-3" /> Período
           </label>
           <div className="flex items-center gap-2">
-            <input 
-              type="date" 
-              value={dateRange.start} 
+            <input
+              type="date"
+              value={dateRange.start}
               onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-              className="bg-secondary/50 border border-border rounded-lg text-xs p-2 text-foreground outline-none focus:ring-1 focus:ring-primary" 
+              className="bg-secondary/50 border border-border rounded-lg text-xs p-2 text-foreground outline-none focus:ring-1 focus:ring-primary"
             />
             <span className="text-muted-foreground text-xs font-bold">ATÉ</span>
-            <input 
-              type="date" 
-              value={dateRange.end} 
+            <input
+              type="date"
+              value={dateRange.end}
               onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-              className="bg-secondary/50 border border-border rounded-lg text-xs p-2 text-foreground outline-none focus:ring-1 focus:ring-primary" 
+              className="bg-secondary/50 border border-border rounded-lg text-xs p-2 text-foreground outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
         </div>
@@ -214,8 +234,8 @@ export default function Caixa() {
           </label>
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-            <input 
-              placeholder="Ex: Admin, João..." 
+            <input
+              placeholder="Ex: Admin, João..."
               value={filterUser}
               onChange={(e) => setFilterUser(e.target.value)}
               className="w-full bg-secondary/50 border border-border rounded-lg text-xs pl-9 pr-3 py-2.5 text-foreground outline-none focus:ring-1 focus:ring-primary"
@@ -223,7 +243,7 @@ export default function Caixa() {
           </div>
         </div>
 
-        <button 
+        <button
           onClick={() => { setFilterUser(''); setDateRange({ start: new Date().toISOString().split('T')[0], end: new Date().toISOString().split('T')[0] }); }}
           className="bg-secondary hover:bg-secondary/80 p-2.5 rounded-lg transition-colors border border-border"
         >
@@ -244,7 +264,7 @@ export default function Caixa() {
               const tipoNormalizado = m.tipo.toLowerCase().trim();
               const IconComp = iconMap[tipoNormalizado] || DollarSign;
               const isEntry = ['abertura', 'entrada'].includes(tipoNormalizado);
-              
+
               let rowStyle = "hover:bg-muted/30";
               let iconStyle = "bg-primary/10 border-primary/20 text-primary";
               let textStyle = "text-primary";
@@ -303,45 +323,48 @@ export default function Caixa() {
       </div>
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
+        <div className={`fixed inset-0 ${isObrigatorio ? 'z-[9999] bg-background/95' : 'z-50 bg-background/80'} backdrop-blur-md flex items-center justify-center p-4`}>
           <div className="w-full max-w-md bg-card border border-border rounded-3xl p-6 shadow-2xl animate-in zoom-in-95 duration-200">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-lg font-black text-foreground flex items-center gap-2 uppercase tracking-tighter">
-                <Plus className="text-primary h-5 w-5" /> Novo Registro
+              <h2 className={`text-lg font-black text-foreground flex items-center gap-2 uppercase tracking-tighter ${isObrigatorio ? 'text-green-500' : ''}`}>
+                {isObrigatorio ? <Lock className="text-green-500 h-5 w-5" /> : <Plus className="text-primary h-5 w-5" />}
+                {isObrigatorio ? 'Abertura Obrigatória do Caixa' : 'Novo Registro'}
               </h2>
-              <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition-colors">
-                <X className="h-5 w-5" />
-              </button>
+              {!isObrigatorio && (
+                <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition-colors">
+                  <X className="h-5 w-5" />
+                </button>
+              )}
             </div>
-            
+
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <button 
-                  disabled={caixaAberto}
+                <button
+                  disabled={caixaAberto && !isObrigatorio}
                   onClick={() => setTipo('abertura')}
                   className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${tipo === 'abertura' ? 'bg-green-600 text-white border-green-500 shadow-lg shadow-green-500/20' : 'bg-secondary border-border text-muted-foreground'}`}
                 >Abertura</button>
 
-                <button 
-                  disabled={!caixaAberto}
+                <button
+                  disabled={!caixaAberto || isObrigatorio}
                   onClick={() => setTipo('fechamento')}
                   className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${tipo === 'fechamento' ? 'bg-amber-600 border-amber-500 text-white' : 'bg-secondary border-border text-muted-foreground'}`}
                 >Fechamento</button>
 
-                <button 
-                  disabled={!caixaAberto}
+                <button
+                  disabled={!caixaAberto || isObrigatorio}
                   onClick={() => setTipo('sangria')}
                   className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${tipo === 'sangria' ? 'bg-yellow-600 border-yellow-500 text-white' : 'bg-secondary border-border text-muted-foreground'}`}
                 >Sangria</button>
-                
-                <button 
-                  disabled={!caixaAberto}
+
+                <button
+                  disabled={!caixaAberto || isObrigatorio}
                   onClick={() => setTipo('entrada')}
                   className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all disabled:opacity-30 disabled:cursor-not-allowed ${tipo === 'entrada' ? 'bg-green-600/20 border-green-500 text-green-500' : 'bg-secondary border-border text-muted-foreground'}`}
                 >Entrada</button>
 
-                <button 
-                  disabled={!caixaAberto}
+                <button
+                  disabled={!caixaAberto || isObrigatorio}
                   onClick={() => setTipo('saida')}
                   className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all disabled:opacity-30 disabled:cursor-not-allowed col-span-2 ${tipo === 'saida' ? 'bg-red-600 border-red-500 text-white' : 'bg-secondary border-border text-muted-foreground'}`}
                 >Saída</button>
@@ -351,13 +374,13 @@ export default function Caixa() {
                 <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest ml-1">Valor do Lançamento</label>
                 <div className="relative">
                   <span className="absolute left-4 top-3 text-primary font-bold text-sm">R$</span>
-                  <input 
-                    type="number" 
-                    step="0.01" 
-                    value={valor || ''} 
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={valor || ''}
                     onChange={(e) => setValor(Number(e.target.value))}
                     placeholder="0,00"
-                    className="w-full bg-secondary border border-border rounded-2xl py-3 pl-10 pr-4 text-foreground font-black text-lg outline-none focus:ring-2 focus:ring-primary/50 transition-all" 
+                    className="w-full bg-secondary border border-border rounded-2xl py-3 pl-10 pr-4 text-foreground font-black text-lg outline-none focus:ring-2 focus:ring-primary/50 transition-all"
                   />
                 </div>
               </div>
@@ -366,7 +389,7 @@ export default function Caixa() {
                 <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest ml-1 flex items-center gap-1">
                   <AlignLeft className="h-3 w-3" /> Descrição Opcional
                 </label>
-                <textarea 
+                <textarea
                   value={descricao}
                   onChange={(e) => setDescricao(e.target.value)}
                   placeholder="Ex: Troco inicial, Pagamento fornecedor..."
@@ -375,15 +398,17 @@ export default function Caixa() {
                 />
               </div>
 
-              <div className="pt-4 grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => setShowForm(false)}
-                  className="py-4 rounded-2xl bg-secondary hover:bg-secondary/80 text-muted-foreground text-xs font-black uppercase border border-border"
-                >Descartar</button>
-                <button 
+              <div className={`pt-4 grid ${isObrigatorio ? 'grid-cols-1' : 'grid-cols-2'} gap-3`}>
+                {!isObrigatorio && (
+                  <button
+                    onClick={() => setShowForm(false)}
+                    className="py-4 rounded-2xl bg-secondary hover:bg-secondary/80 text-muted-foreground text-xs font-black uppercase border border-border"
+                  >Descartar</button>
+                )}
+                <button
                   onClick={handleSave}
-                  className="py-4 rounded-2xl bg-primary text-primary-foreground text-xs font-black uppercase transition-all shadow-lg shadow-primary/20"
-                >Confirmar</button>
+                  className={`py-4 rounded-2xl bg-primary text-primary-foreground text-xs font-black uppercase transition-all shadow-lg shadow-primary/20 ${isObrigatorio && 'animate-pulse'}`}
+                >{isObrigatorio ? 'Realizar Abertura Agora' : 'Confirmar'}</button>
               </div>
             </div>
           </div>

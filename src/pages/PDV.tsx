@@ -773,9 +773,14 @@ export default function PDV() {
                         </span>
                       )}
                     </div>
-                    <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded border border-border shadow-sm">
-                      Estoque: <span className={Number(lote.quantidade_atual) <= 0 ? 'text-red-500' : 'text-green-500'}>{lote.quantidade_atual || 0}</span>
-                    </span>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className="text-sm font-bold text-primary">
+                        {fCurrency(promocoes[lotSelectionItem.id] || lotSelectionItem.preco_venda)}
+                      </span>
+                      <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded border border-border shadow-sm">
+                        Estoque: <span className={Number(lote.quantidade_atual) <= 0 ? 'text-red-500' : 'text-green-500'}>{lote.quantidade_atual || 0}</span>
+                      </span>
+                    </div>
                   </div>
                   {lote.observacao && (
                     <div className="mt-1 p-2 bg-background/50 rounded border border-border/50 text-xs italic text-muted-foreground flex items-start gap-1.5">
