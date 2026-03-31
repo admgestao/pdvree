@@ -10,7 +10,6 @@ interface Lote {
   produto_id: string;
   quantidade: number;
   custo: number;
-  preco_venda?: number; // Campo adicionado para preço por lote
   data_entrada: string;
   data_validade: string;
   observacao: string;
@@ -58,11 +57,6 @@ export default function Produtos() {
   const { user, isAdmin } = useAuth();
   const [produtos, setProdutos] = useState<Produto[]>([]);
   const [search, setSearch] = useState('');
-  
-  // NOVO: Estados para autocomplete da busca
-  const [showSearchSuggestions, setShowSearchSuggestions] = useState(false);
-  const searchRef = useRef<HTMLDivElement>(null);
-  
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   
@@ -75,15 +69,9 @@ export default function Produtos() {
   const [codigoConflitoData, setCodigoConflitoData] = useState<{produto: Produto, lotes: any[]} | null>(null);
   const [editing, setEditing] = useState<Produto | null>(null);
   const [form, setForm] = useState<Partial<Produto>>(emptyProduct);
-  
-  // NOVO: Estados para sistema de guias de lotes
-  const [activeLoteTab, setActiveLoteTab] = useState<string>('base');
-  const [loteTabsData, setLoteTabsData] = useState<Record<string, Partial<Produto>>>({});
-  
   const [loteForm, setLoteForm] = useState({ 
     quantidade: 0, 
     custo: 0, 
-    preco_venda: 0, // Campo adicionado
     data_entrada: new Date().toISOString().split('T')[0], 
     data_validade: '', 
     observacao: '',
@@ -112,17 +100,7 @@ export default function Produtos() {
 
   const [activeTab, setActiveTab] = useState<'todos' | 'estoque_baixo' | 'sem_estoque' | 'vencidos'>('todos');
 
-  // NOVO: Fechar sugestões ao clicar fora
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
-        setShowSearchSuggestions(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
+  // Função helper para conversão segura para maiúsculas
   function toUpperSafe(value: any): any {
     if (typeof value === 'string') return value.toUpperCase();
     return value;
@@ -175,6 +153,7 @@ export default function Produtos() {
     const produtosComLotes = (pData || []).map(p => {
       const lotesDoProduto = (lData || []).filter((l: any) => l.produto_id === p.id);
       
+      // Garante que o grid reflete o lote mais recente se houver divergência
       if (lotesDoProduto.length > 0) {
         const loteMaisRecente = [...lotesDoProduto].sort((a, b) => {
           const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
@@ -266,19 +245,6 @@ export default function Produtos() {
     if (qtd_proxima > 0) return { status: 'proximo', qtd: qtd_proxima, dias: dias_proximo };
     return { status: 'ok', qtd: 0 };
   }
-
-  // NOVO: Busca inteligente com sugestões
-  const searchSuggestions = search.trim().length === 0 ? [] : produtos
-    .filter((p) => {
-      const term = search.toLowerCase();
-      return (
-        p.nome?.toLowerCase().includes(term) ||
-        p.marca?.toLowerCase().includes(term) ||
-        p.codigo?.toLowerCase().includes(term) ||
-        p.categoria?.toLowerCase().includes(term)
-      );
-    })
-    .slice(0, 8);
 
   const filtered = produtos.filter((p) => {
     const matchesSearch = 
@@ -381,47 +347,40 @@ export default function Produtos() {
   function openNew() {
     setEditing(null);
     setForm({ ...emptyProduct });
-    setActiveLoteTab('base');
-    setLoteTabsData({});
     setShowForm(true);
   }
 
-  // MODIFICADO: Função openEdit com suporte a guias de lotes
   function openEdit(p: Produto) {
     setEditing(p);
-    setActiveLoteTab('base');
     
-    // Inicializar dados das guias de lotes
-    const tabsData: Record<string, Partial<Produto>> = {
-      base: { ...p }
-    };
-    
+    let updatedForm = { ...p };
     if (p.lotes && p.lotes.length > 0) {
-      p.lotes.forEach(lote => {
-        tabsData[lote.id] = {
-          ...p,
-          custo: lote.custo,
-          preco_venda: lote.preco_venda || p.preco_venda,
-          codigo: lote.codigo_barras,
-          data_entrada: lote.data_entrada,
-          data_validade: lote.data_validade,
-          estoque_atual: lote.quantidade_atual || lote.quantidade,
-          observacao: lote.observacao
-        };
-      });
+      // Pega o lote mais recente baseado na data de entrada e criado_em
+      const loteMaisRecente = [...p.lotes].sort((a, b) => {
+        const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
+        const dateB = new Date(b.data_entrada || '2000-01-01').getTime();
+        if (dateA === dateB) {
+          const crA = new Date(a.criado_em || '2000-01-01').getTime();
+          const crB = new Date(b.criado_em || '2000-01-01').getTime();
+          return crB - crA;
+        }
+        return dateB - dateA;
+      })[0];
+      // Preenche os campos do form com os dados do lote mais recente
+      updatedForm.custo = loteMaisRecente.custo;
+      updatedForm.data_entrada = loteMaisRecente.data_entrada || updatedForm.data_entrada;
+      updatedForm.data_validade = loteMaisRecente.data_validade || updatedForm.data_validade;
+      updatedForm.codigo = loteMaisRecente.codigo_barras || updatedForm.codigo;
+      // Recalcula a margem se o custo for atualizado
+      const custo = Number(updatedForm.custo) || 0;
+      const venda = Number(updatedForm.preco_venda) || 0;
+      if (custo > 0 && venda > 0) {
+        updatedForm.margem = Number((((venda - custo) / custo) * 100).toFixed(2));
+      }
     }
-    
-    setLoteTabsData(tabsData);
-    setForm(tabsData.base);
-    setShowForm(true);
-  }
 
-  // NOVO: Função para trocar entre guias de lotes
-  function changeLoteTab(tabId: string) {
-    setActiveLoteTab(tabId);
-    if (loteTabsData[tabId]) {
-      setForm(loteTabsData[tabId]);
-    }
+    setForm(updatedForm);
+    setShowForm(true);
   }
 
   function abrirModalLote() {
@@ -430,7 +389,6 @@ export default function Produtos() {
     setLoteForm({
       quantidade: 0,
       custo: 0,
-      preco_venda: form.preco_venda || 0,
       data_entrada: new Date().toISOString().split('T')[0],
       data_validade: '',
       observacao: '',
@@ -595,41 +553,10 @@ export default function Produtos() {
     next.valor_estoque = custo * estoque;
     next.lucro_estoque = next.lucro_produto * estoque;
     setForm(next);
-    
-    // NOVO: Atualizar dados da guia ativa
-    if (editing) {
-      setLoteTabsData(prev => ({
-        ...prev,
-        [activeLoteTab]: next
-      }));
-    }
   }
 
-  // MODIFICADO: handleSave com suporte a salvamento por lote
   async function handleSave() {
-    if (!form.nome) { toast.error('Nome é obrigatório'); return; }
-    
-    // Se estiver editando um lote específico (não a aba base)
-    if (editing && activeLoteTab !== 'base') {
-      const { error } = await supabase.from('produto_lotes').update({
-        custo: Number(form.custo) || 0,
-        preco_venda: Number(form.preco_venda) || 0,
-        codigo_barras: toUpperSafe(form.codigo || ''),
-        data_entrada: form.data_entrada || null,
-        data_validade: form.data_validade || null,
-        observacao: toUpperSafe(form.observacao || '')
-      }).eq('id', activeLoteTab);
-
-      if (error) { 
-        toast.error('Erro ao atualizar lote: ' + error.message); 
-        return; 
-      }
-      
-      await logAction(user?.name || '', 'editar_lote', `${editing.nome} - Lote ${activeLoteTab.slice(-6)}`);
-      toast.success('Lote atualizado com sucesso!');
-      setShowForm(false);
-      load();
-      return;
+    if (!form.nome) { toast.error('Nome é obrigatório'); return;
     }
     
     const payload = {
@@ -655,13 +582,16 @@ export default function Produtos() {
     
     if (editing) {
       const { error } = await supabase.from('produtos').update(payload).eq('id', editing.id);
-      if (error) { toast.error('Erro ao atualizar: ' + error.message); return; }
+      if (error) { toast.error('Erro ao atualizar: ' + error.message); return;
+      }
       
+      // Sincronizar o lote mais recente com as alterações principais para refletir corretamente no Grid/Edições Futuras
       if (editing.lotes && editing.lotes.length > 0) {
         const loteMaisRecente = [...editing.lotes].sort((a, b) => {
           const dateA = new Date(a.data_entrada || '2000-01-01').getTime();
           const dateB = new Date(b.data_entrada || '2000-01-01').getTime();
-          if (dateA === dateB) {
+          if (dateA === dateB) 
+          {
             const crA = new Date(a.criado_em || '2000-01-01').getTime();
             const crB = new Date(b.criado_em || '2000-01-01').getTime();
             return crB - crA;
@@ -670,7 +600,6 @@ export default function Produtos() {
         })[0];
         await supabase.from('produto_lotes').update({
           custo: payload.custo,
-          preco_venda: payload.preco_venda,
           codigo_barras: payload.codigo,
           data_entrada: payload.data_entrada || new Date().toISOString().split('T')[0],
           data_validade: payload.data_validade || null
@@ -681,7 +610,8 @@ export default function Produtos() {
       toast.success('Produto atualizado');
     } else {
       const { data: insertedProduto, error } = await supabase.from('produtos').insert(payload).select().single();
-      if (error) { toast.error('Erro ao cadastrar: ' + error.message); return; }
+      if (error) { toast.error('Erro ao cadastrar: ' + error.message); return;
+      }
       
       await supabase.from('produto_lotes').insert({
         produto_id: insertedProduto.id,
@@ -689,7 +619,6 @@ export default function Produtos() {
         quantidade_inicial: payload.estoque_atual,
         quantidade_atual: payload.estoque_atual,
         custo: payload.custo,
-        preco_venda: payload.preco_venda,
         data_entrada: payload.data_entrada || new Date().toISOString().split('T')[0],
         data_validade: payload.data_validade || null,
         observacao: toUpperSafe(payload.observacao || 'Lote Inicial (Cadastro)'),
@@ -715,7 +644,6 @@ export default function Produtos() {
     const custoAntigo = Number(editing.custo) || 0;
     const qtdNovo = Number(loteForm.quantidade);
     const custoNovo = Number(loteForm.custo);
-    const precoVendaNovo = Number(loteForm.preco_venda);
 
     if (loteFormMode === 'edit' && loteEditId) {
         const { data: oldLote } = await supabase.from('produto_lotes').select('*').eq('id', loteEditId).single();
@@ -729,7 +657,6 @@ export default function Produtos() {
                 quantidade_atual: novaQtdAtual,
                 status: novaQtdAtual <= 0 ? 'esgotado' : 'ativo',
                 custo: custoNovo,
-                preco_venda: precoVendaNovo,
                 data_entrada: loteForm.data_entrada || new Date().toISOString().split('T')[0],
                 data_validade: loteForm.data_validade || null,
                 observacao: toUpperSafe(loteForm.observacao || ''),
@@ -743,6 +670,7 @@ export default function Produtos() {
 
             const novoEstoque = estoqueAntigo + diff;
             
+            // Verifica se o lote editado é o mais recente do produto
             const { data: todosLotes } = await supabase.from('produto_lotes').select('*').eq('produto_id', editing.id);
             let isUltimoLote = false;
             
@@ -761,21 +689,22 @@ export default function Produtos() {
                 isUltimoLote = loteMaisRecente.id === loteEditId;
             }
 
+            // Prepara a atualização base do produto (apenas estoques e valores baseados no estoque)
             let payloadProduto: any = {
                 estoque_atual: novoEstoque,
                 valor_estoque: custoAntigo * novoEstoque,
                 lucro_estoque: editing.lucro_produto * novoEstoque,
             };
 
+            // Se for o lote mais recente, propaga todas as informações principais (Código, Custos, Datas)
             if (isUltimoLote) {
-                const venda = precoVendaNovo || Number(editing.preco_venda) || 0;
+                const venda = Number(editing.preco_venda) || 0;
                 const lucroProduto = venda - custoNovo;
                 const margemNova = custoNovo > 0 ? ((venda - custoNovo) / custoNovo) * 100 : 0;
 
                 payloadProduto = {
                     ...payloadProduto,
                     custo: custoNovo,
-                    preco_venda: venda,
                     margem: Number(margemNova.toFixed(2)),
                     lucro_produto: lucroProduto,
                     valor_estoque: custoNovo * novoEstoque,
@@ -804,7 +733,6 @@ export default function Produtos() {
           quantidade_inicial: qtdNovo,
           quantidade_atual: qtdNovo,
           custo: custoNovo,
-          preco_venda: precoVendaNovo,
           data_entrada: loteForm.data_entrada || new Date().toISOString().split('T')[0],
           data_validade: loteForm.data_validade || null,
           observacao: toUpperSafe(loteForm.observacao || ''),
@@ -816,12 +744,11 @@ export default function Produtos() {
           return;
         }
 
-        const venda = precoVendaNovo || Number(editing.preco_venda) || 0;
+        const venda = Number(editing.preco_venda) || 0;
         const lucroProduto = venda - custoMedio;
         const margemNova = custoMedio > 0 ? ((venda - custoMedio) / custoMedio) * 100 : 0;
         const { error: prodError } = await supabase.from('produtos').update({
           custo: custoMedio,
-          preco_venda: venda,
           estoque_atual: novoEstoque,
           margem: Number(margemNova.toFixed(2)),
           lucro_produto: lucroProduto,
@@ -859,7 +786,6 @@ export default function Produtos() {
       setLoteForm({
           quantidade: lote.quantidade_inicial || lote.quantidade,
           custo: lote.custo,
-          preco_venda: lote.preco_venda || produto.preco_venda,
           data_entrada: lote.data_entrada || '',
           data_validade: lote.data_validade || '',
           observacao: lote.observacao || '',
@@ -876,7 +802,6 @@ export default function Produtos() {
     setLoteForm({
         quantidade: lote.quantidade_inicial || lote.quantidade,
         custo: lote.custo,
-        preco_venda: lote.preco_venda || editing?.preco_venda || 0,
         data_entrada: lote.data_entrada || '',
         data_validade: lote.data_validade || '',
         observacao: lote.observacao || '',
@@ -996,40 +921,13 @@ export default function Produtos() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
-        {/* NOVO: Campo de busca com autocomplete */}
-        <div className="relative md:col-span-2 lg:col-span-2" ref={searchRef}>
+        <div className="relative md:col-span-2 lg:col-span-2">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setShowSearchSuggestions(e.target.value.length > 0);
-            }}
-            onFocus={() => { if(search.length > 0) setShowSearchSuggestions(true); }}
+            value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nome, marca, código..."
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
-          
-          {/* Dropdown de sugestões */}
-          {showSearchSuggestions && searchSuggestions.length > 0 && (
-            <ul className="absolute z-40 mt-1 w-full max-h-64 overflow-y-auto bg-card border border-border rounded-xl shadow-lg text-sm">
-              {searchSuggestions.map((p) => (
-                <li
-                  key={p.id}
-                  className="px-3 py-2 cursor-pointer hover:bg-muted flex flex-col"
-                  onMouseDown={() => {
-                    setSearch(p.nome);
-                    setShowSearchSuggestions(false);
-                  }}
-                >
-                  <span className="font-medium text-foreground">{p.nome}</span>
-                  <span className="text-[10px] text-muted-foreground uppercase">
-                    {p.marca || '-'} • {p.codigo || '-'} • {p.categoria || 'GERAL'} • {p.estoque_atual} {p.unidade}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
 
         <div className="relative md:col-span-1">
@@ -1189,7 +1087,6 @@ export default function Produtos() {
         </div>
       )}
 
-      {/* MODIFICADO: Formulário principal com sistema de guias */}
       {showForm && !showLoteForm && !showHistoryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-auto scrollbar-thin scrollbar-thumb-muted 
@@ -1211,38 +1108,13 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
               <button onClick={() => setShowForm(false)} className="text-muted-foreground hover:text-foreground transition"><X className="h-5 w-5" /></button>
             </div>
 
-            {/* NOVO: Sistema de guias para produtos com múltiplos lotes */}
-            {editing && editing.lotes && editing.lotes.length > 0 && (
-              <div className="flex space-x-2 border-b border-border pb-2 overflow-x-auto scrollbar-thin scrollbar-thumb-muted">
-                <button 
-                  onClick={() => changeLoteTab('base')} 
-                  className={`px-3 py-1.5 text-[10px] font-bold uppercase rounded-t-lg transition-colors whitespace-nowrap ${
-                    activeLoteTab === 'base' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                  }`}
-                >
-                  Produto Base
-                </button>
-                {editing.lotes.map((lote, index) => (
-                  <button 
-                    key={lote.id}
-                    onClick={() => changeLoteTab(lote.id)} 
-                    className={`px-3 py-1.5 text-[10px] font-bold uppercase rounded-t-lg transition-colors whitespace-nowrap ${
-                      activeLoteTab === lote.id ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'
-                    }`}
-                  >
-                    Lote {index + 1} ({lote.quantidade_atual || lote.quantidade} un)
-                  </button>
-                ))}
-              </div>
-            )}
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Nome *</label>
                 <input 
                   value={form.nome || ''} 
                   onChange={(e) => updateField('nome', e.target.value)} 
-                  disabled={activeLoteTab !== 'base'}
+                  disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
                </div>
@@ -1251,32 +1123,35 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                 <input 
                   value={form.marca || ''} 
                   onChange={(e) => updateField('marca', e.target.value)} 
-                  disabled={activeLoteTab !== 'base'}
+                  disabled={!!editing}
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
                </div>
 
               <div className="md:col-span-2 space-y-1">
-                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Código de Barras {activeLoteTab !== 'base' && 'do Lote'}</label>
+                <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Código de Barras</label>
                 <div className="flex gap-2">
                   <input 
                     value={form.codigo || ''} 
                     onChange={(e) => updateField('codigo', e.target.value)} 
                     onBlur={(e) => verificarCodigo(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') verificarCodigo(form.codigo || ''); }}
-                    className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary/40 text-foreground" 
+                    disabled={!!editing}
+                    className="flex-1 p-3 bg-muted/30 border border-border rounded-xl text-xs font-mono outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                   <button 
                     type="button" 
                     onClick={() => setScanMode('produto')} 
-                    className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md" 
+                    disabled={!!editing}
+                    className="px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition flex items-center justify-center shadow-md disabled:opacity-50 disabled:cursor-not-allowed" 
                     title="Escanear com a câmera"
                   >
                     <Camera className="h-4 w-4" />
                   </button>
                   <button 
                     onClick={genCodeProduto} 
-                    className="px-4 bg-muted border border-border hover:border-primary/40 rounded-xl text-[10px] font-black uppercase transition text-foreground"
+                    disabled={!!editing}
+                    className="px-4 bg-muted border border-border hover:border-primary/40 rounded-xl text-[10px] font-black uppercase transition text-foreground disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Gerar
                   </button>
@@ -1290,23 +1165,25 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                     type="date" 
                     value={form.data_entrada || ''} 
                     onChange={(e) => updateField('data_entrada', e.target.value)} 
-                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark]" 
+                    disabled={!!editing}
+                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade {activeLoteTab !== 'base' && '(Lote)'}</label>
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Data de Validade (Lote Base)</label>
                   <input 
                     type="date" 
                     value={form.data_validade || ''} 
                     onChange={(e) => updateField('data_validade', e.target.value)} 
-                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark]" 
+                    disabled={!!editing}
+                    className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground [color-scheme:dark] disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                 </div>
               </div>
 
               <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
-                  <label className="text-[10px] font-black text-orange-500 uppercase">Custo {activeLoteTab === 'base' && editing && "(Médio)"}</label>
+                  <label className="text-[10px] font-black text-orange-500 uppercase">Custo {editing && "(Médio)"}</label>
                   <input 
                     type="text" 
                     value={formatCurrency(form.custo || 0)} 
@@ -1325,7 +1202,7 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   />
                 </div>
                 <div className="p-3 rounded-xl border border-border bg-muted/20 space-y-1">
-                  <label className="text-[10px] font-black text-green-500 uppercase">Venda {activeLoteTab !== 'base' && '(Lote)'}</label>
+                  <label className="text-[10px] font-black text-green-500 uppercase">Venda</label>
                   <input 
                     type="text" 
                     value={formatCurrency(form.preco_venda || 0)} 
@@ -1346,10 +1223,10 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                     }} 
                     onFocus={() => setShowCategoryDropdown(true)}
                     onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
-                    disabled={activeLoteTab !== 'base'}
+                    disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
-                  {showCategoryDropdown && categoriasExistentes.length > 0 && activeLoteTab === 'base' && (
+                  {showCategoryDropdown && categoriasExistentes.length > 0 && !editing && (
                     <ul className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-[160px] overflow-y-auto scrollbar-thin scrollbar-thumb-muted">
                       {categoriasExistentes
                         .filter(c => c.toLowerCase().includes((form.categoria || '').toLowerCase()))
@@ -1373,7 +1250,7 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   <select 
                     value={form.fornecedor || ''} 
                     onChange={(e) => updateField('fornecedor', e.target.value)} 
-                    disabled={activeLoteTab !== 'base'}
+                    disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground appearance-none disabled:opacity-70 disabled:cursor-not-allowed"
                   >
                     <option value="" className="bg-card text-foreground">Selecione...</option>
@@ -1384,12 +1261,12 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
 
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Atual {activeLoteTab !== 'base' && '(Lote)'}</label>
+                  <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Atual</label>
                   <input 
                     type="number" 
                     value={form.estoque_atual || 0} 
                     onChange={(e) => updateField('estoque_atual', Number(e.target.value))} 
-                    disabled={activeLoteTab !== 'base' || !!editing} 
+                    disabled={!!editing} 
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
                   />
                 </div>
@@ -1399,7 +1276,7 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                     list="unidades-list"
                     value={form.unidade || ''} 
                     onChange={(e) => updateField('unidade', e.target.value)} 
-                    disabled={activeLoteTab !== 'base'}
+                    disabled={!!editing}
                     className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed"
                   />
                   <datalist id="unidades-list">
@@ -1414,8 +1291,7 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   type="number" 
                   value={form.estoque_minimo || 0} 
                   onChange={(e) => updateField('estoque_minimo', Number(e.target.value))} 
-                  disabled={activeLoteTab !== 'base'}
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground disabled:opacity-70 disabled:cursor-not-allowed" 
+                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold outline-none focus:border-primary/40 text-foreground" 
                 />
               </div>
 
@@ -1424,8 +1300,7 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                   type="checkbox" 
                   checked={form.ativo !== false} 
                   onChange={(e) => updateField('ativo', e.target.checked)} 
-                  disabled={activeLoteTab !== 'base'}
-                  className="h-5 w-5 rounded border-border bg-muted accent-primary disabled:opacity-70" 
+                  className="h-5 w-5 rounded border-border bg-muted accent-primary" 
                 />
                 <label className="text-xs font-black uppercase text-foreground">Produto Ativo</label>
                </div>
@@ -1435,8 +1310,9 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
                 <textarea 
                   value={form.observacao || ''} 
                   onChange={(e) => updateField('observacao', e.target.value)} 
+                  disabled={!!editing}
                   rows={2} 
-                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary/40 text-foreground resize-none" 
+                  className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs outline-none focus:border-primary/40 text-foreground resize-none disabled:opacity-70 disabled:cursor-not-allowed" 
                 />
               </div>
             </div>
@@ -1445,14 +1321,13 @@ rounded-2xl border border-border bg-card text-foreground p-6 space-y-4 shadow-2x
               <button onClick={() => setShowForm(false)} className="flex-1 h-12 rounded-xl border border-border text-xs font-black uppercase hover:bg-muted transition text-foreground">Cancelar</button>
               <button 
                 onClick={handleSave} className="flex-[2] h-12 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:bg-primary/90 transition shadow-lg flex items-center justify-center gap-2">
-                <Save className="h-4 w-4" /> {editing ? (activeLoteTab === 'base' ? 'Salvar Produto' : 'Salvar Lote') : 'Finalizar Cadastro'}
+                <Save className="h-4 w-4" /> {editing ? 'Salvar Alterações' : 'Finalizar Cadastro'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODIFICADO: Formulário de lote com campo de preço de venda */}
       {showLoteForm && editing && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
           <div className="w-full max-w-lg bg-card border border-border rounded-2xl p-6 space-y-6 
@@ -1512,17 +1387,6 @@ shadow-2xl animate-in fade-in slide-in-from-bottom-4">
                    className="w-full p-3 bg-blue-500/5 border border-blue-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-blue-500 text-foreground" 
                  />
                </div>
-
-               {/* NOVO: Campo de preço de venda para o lote */}
-               <div className="md:col-span-2 space-y-1">
-                <label className="text-[10px] font-black uppercase text-green-500">Preço de Venda (R$)</label>
-                 <input 
-                   type="text" 
-                   value={formatCurrency(loteForm.preco_venda)} 
-                  onChange={(e) => setLoteForm({...loteForm, preco_venda: parseCurrencyToNumber(e.target.value)})} 
-                   className="w-full p-3 bg-green-500/5 border border-green-500/20 rounded-xl text-xs font-mono font-bold outline-none focus:border-green-500 text-foreground" 
-                 />
-               </div>
              
               <div className="space-y-1">
                  <label className="text-[10px] font-black uppercase text-muted-foreground">Data Entrada</label>
@@ -1560,7 +1424,6 @@ shadow-2xl animate-in fade-in slide-in-from-bottom-4">
         </div>
       )}
 
-      {/* Modais restantes mantidos iguais ao código original */}
       {showHistoryModal && editing && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
           <div className="w-full max-w-4xl max-h-[90vh] bg-card border border-border rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95">
@@ -1656,7 +1519,7 @@ shadow-2xl animate-in fade-in slide-in-from-bottom-4">
                           </td>
                         </tr>
                       );
-                    })
+})
                   )}
                 </tbody>
               </table>
@@ -1737,7 +1600,6 @@ shadow-2xl animate-in fade-in slide-in-from-bottom-4">
                   setLoteForm({
                       quantidade: 0,
                       custo: 0,
-                      preco_venda: codigoConflitoData.produto.preco_venda || 0,
                       data_entrada: new Date().toISOString().split('T')[0],
                       data_validade: '',
                       observacao: '',
