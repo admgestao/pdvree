@@ -51,8 +51,6 @@ interface Produto {
     data_validade?: string;
     quantidade_atual?: number;
     observacao?: string;
-    // CORREÇÃO PROBLEMA 3: cada lote pode ter preço próprio
-    preco_venda?: number;
   }[];
 }
 
@@ -167,9 +165,8 @@ export default function PDV() {
       const pIds = (pData || []).map(p => p.id);
       let lotesAdicionais: any[] = [];
       if (pIds.length > 0) {
-        // CORREÇÃO PROBLEMA 3: incluindo preco_venda do lote na busca
         const { data: lExtras } = await supabase.from('produto_lotes')
-          .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao, preco_venda')
+          .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao')
           .in('produto_id', pIds);
         lotesAdicionais = lExtras || [];
       }
@@ -189,9 +186,7 @@ export default function PDV() {
         if (prod && prod.lotes) {
            prod.lotes.push({ 
              id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-             quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-             // CORREÇÃO PROBLEMA 3: preservando preco_venda do lote
-             preco_venda: lote.preco_venda != null ? Number(lote.preco_venda) : undefined,
+             quantidade_atual: lote.quantidade_atual, observacao: lote.observacao
            });
         }
       });
@@ -212,9 +207,7 @@ export default function PDV() {
             if (prod.lotes && !prod.lotes.find(l => l.id === lote.id)) {
               prod.lotes.push({
                 id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-                quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-                // CORREÇÃO PROBLEMA 3: preservando preco_venda do lote
-                preco_venda: lote.preco_venda != null ? Number(lote.preco_venda) : undefined,
+                quantidade_atual: lote.quantidade_atual, observacao: lote.observacao
               });
             }
             if (query === lote.codigo_barras) {
@@ -235,103 +228,31 @@ export default function PDV() {
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
 
-  // CORREÇÃO PROBLEMAS 1 e 2:
-  // O handleSearchExact agora busca todos os lotes do produto encontrado e
-  // chama addToCart (que verifica múltiplos lotes), em vez de executeAddToCart direto.
-  // Após adicionar, limpa search e showResults corretamente.
   const handleSearchExact = async (e: React.FormEvent) => {
     e.preventDefault();
     const query = search.trim();
     if (!query) return;
 
-    // Primeiro tenta encontrar pelo código de barras do lote (bipagem)
-    const { data: lote } = await supabase.from('produto_lotes')
-      .select('*, produtos(*)')
-      .eq('codigo_barras', query)
-      .maybeSingle();
+    const { data: lote } = await supabase.from('produto_lotes').select('*, produtos(*)').eq('codigo_barras', query).maybeSingle();
+    let prod = null; let loteId = undefined; let loteCodigo = undefined;
 
     if (lote && lote.produtos) {
-      // Encontrou pelo código de barras: busca todos os lotes deste produto
-      // CORREÇÃO PROBLEMA 3: inclui preco_venda na busca dos lotes
-      const { data: todosLotes } = await supabase.from('produto_lotes')
-        .select('id, codigo_barras, data_validade, quantidade_atual, observacao, preco_venda')
-        .eq('produto_id', lote.produtos.id);
-
-      const prod: Produto = {
-        id: lote.produtos.id,
-        nome: lote.produtos.nome,
-        codigo: lote.produtos.codigo || '',
-        marca: lote.produtos.marca || '',
-        preco_venda: Number(lote.produtos.preco_venda) || 0,
-        preco_custo: Number(lote.produtos.preco_custo) || 0,
-        estoque_atual: Number(lote.produtos.estoque_atual) || 0,
-        categoria: lote.produtos.categoria || '',
-        // CORREÇÃO PROBLEMA 2: popula lotes para que addToCart
-        // possa exibir a janela de seleção se houver mais de um
-        lotes: (todosLotes || []).map(l => ({
-          id: l.id,
-          codigo: l.codigo_barras,
-          data_validade: l.data_validade,
-          quantidade_atual: l.quantidade_atual,
-          observacao: l.observacao,
-          // CORREÇÃO PROBLEMA 3: preserva preco_venda por lote
-          preco_venda: l.preco_venda != null ? Number(l.preco_venda) : undefined,
-        })),
-        // Se só houver um lote (o próprio bipado), pré-seleciona
-        lote_id: (todosLotes || []).length === 1 ? lote.id : undefined,
-        lote_codigo: (todosLotes || []).length === 1 ? lote.codigo_barras : undefined,
-      };
-
-      // CORREÇÃO PROBLEMA 2: se houver exatamente o lote bipado e mais de um lote,
-      // pré-marca o lote bipado para que addToCart possa usá-lo diretamente
-      // caso o usuário queira, mas ainda assim exibe a janela de seleção
-      // para que o operador confirme qual lote usar.
-      // Para manter coerência com a bipagem (código exato = lote exato),
-      // forçamos o lote_id do item bipado mesmo com múltiplos lotes.
-      if ((todosLotes || []).length > 1) {
-        prod.lote_id = lote.id;
-        prod.lote_codigo = lote.codigo_barras;
-      }
-
-      addToCart(prod);
+      prod = lote.produtos; loteId = lote.id; loteCodigo = lote.codigo_barras;
     } else {
-      // Tenta encontrar pelo código do produto
-      const { data: p } = await supabase.from('produtos')
-        .select('*')
-        .eq('codigo', query)
-        .eq('ativo', true)
-        .maybeSingle();
-
-      if (p) {
-        // CORREÇÃO PROBLEMA 3: busca lotes com preco_venda
-        const { data: todosLotes } = await supabase.from('produto_lotes')
-          .select('id, codigo_barras, data_validade, quantidade_atual, observacao, preco_venda')
-          .eq('produto_id', p.id);
-
-        const prod: Produto = {
-          id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
-          preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
-          estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-          lotes: (todosLotes || []).map(l => ({
-            id: l.id,
-            codigo: l.codigo_barras,
-            data_validade: l.data_validade,
-            quantidade_atual: l.quantidade_atual,
-            observacao: l.observacao,
-            // CORREÇÃO PROBLEMA 3: preserva preco_venda por lote
-            preco_venda: l.preco_venda != null ? Number(l.preco_venda) : undefined,
-          })),
-        };
-        addToCart(prod);
-      } else {
-        toast.error('Produto ou Lote não encontrado');
-      }
+      const { data: p } = await supabase.from('produtos').select('*').eq('codigo', query).eq('ativo', true).maybeSingle();
+      prod = p;
     }
 
-    // CORREÇÃO PROBLEMA 1: limpa a busca e esconde resultados
-    // independentemente do resultado, evitando lista residual
-    setSearch('');
-    setShowResults(false);
+    if (prod) {
+      addToCart({
+        id: prod.id, nome: prod.nome, codigo: prod.codigo || '', marca: prod.marca || '',
+        preco_venda: Number(prod.preco_venda) || 0, preco_custo: Number(prod.preco_custo) || 0,
+        estoque_atual: Number(prod.estoque_atual) || 0, categoria: prod.categoria || '',
+        lote_id: loteId, lote_codigo: loteCodigo, lotes: [] 
+      });
+    } else {
+      toast.error('Produto ou Lote não encontrado');
+    }
   };
 
   const addToCart = (product: Produto) => {
@@ -350,18 +271,7 @@ export default function PDV() {
     executeAddToCart(finalProduct);
   };
 
-  // CORREÇÃO PROBLEMA 3: ao executar a adição, resolve o preço correto do lote selecionado
   const executeAddToCart = (product: Produto) => {
-    // Determina o preço de venda correto: usa o preco_venda do lote se disponível,
-    // caso contrário usa o preco_venda do produto pai
-    let precoFinal = product.preco_venda;
-    if (product.lote_id && product.lotes && product.lotes.length > 0) {
-      const loteAtual = product.lotes.find(l => l.id === product.lote_id);
-      if (loteAtual && loteAtual.preco_venda != null) {
-        precoFinal = loteAtual.preco_venda;
-      }
-    }
-
     setCart((prev) => {
       const existing = prev.find((i) => i.id === product.id && i.lote_id === product.lote_id);
       if (existing) {
@@ -370,18 +280,14 @@ export default function PDV() {
       }
       return [...prev, {
         cartItemId: crypto.randomUUID(), id: product.id, nome: product.nome, codigo: product.codigo, marca: product.marca,
-        // CORREÇÃO PROBLEMA 3: usa precoFinal (do lote ou do produto)
-        price: precoFinal,
-        preco_custo: product.preco_custo, quantity: 1, stock: product.estoque_atual,
+        price: product.preco_venda, preco_custo: product.preco_custo, quantity: 1, stock: product.estoque_atual,
         discount: 0, discountType: 'percent', lote_id: product.lote_id, lote_codigo: product.lote_codigo
       }];
     });
-    // CORREÇÃO PROBLEMA 1: garante limpeza da busca ao adicionar via lista clicável também
     setSearch('');
     setShowResults(false);
   };
 
-  // CORREÇÃO PROBLEMA 3: ao selecionar lote específico, usa preco_venda do lote
   const handleSelectSpecificLot = (product: Produto, lote: any) => {
     executeAddToCart({ ...product, lote_id: lote.id, lote_codigo: lote.codigo });
     setLotSelectionItem(null);
@@ -716,11 +622,7 @@ export default function PDV() {
                 <button key={lote.id} onClick={() => handleSelectSpecificLot(lotSelectionItem, lote)} className="w-full text-left p-3 rounded-lg border border-border bg-secondary/50 hover:bg-secondary hover:border-primary/50 transition-all flex flex-col gap-1.5 group">
                   <div className="flex justify-between items-start w-full">
                     <div className="flex flex-col"><span className="font-bold text-sm text-primary group-hover:underline">Cód: {lote.codigo}</span>{lote.data_validade && (<span className="text-[11px] text-muted-foreground mt-0.5">Validade: <span className="font-medium text-foreground">{lote.data_validade.split('T')[0].split('-').reverse().join('/')}</span></span>)}</div>
-                    <div className="flex flex-col items-end gap-1">
-                      {/* CORREÇÃO PROBLEMA 3: exibe o preço correto do lote na janela de seleção */}
-                      <span className="text-sm font-bold text-primary">{fCurrency(lote.preco_venda != null ? lote.preco_venda : lotSelectionItem.preco_venda)}</span>
-                      <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded shadow-sm">Estoque: <span className={Number(lote.quantidade_atual) <= 0 ? 'text-red-500' : 'text-green-500'}>{lote.quantidade_atual || 0}</span></span>
-                    </div>
+                    <div className="flex flex-col items-end gap-1"><span className="text-sm font-bold text-primary">{fCurrency(lotSelectionItem.preco_venda)}</span><span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded shadow-sm">Estoque: <span className={Number(lote.quantidade_atual) <= 0 ? 'text-red-500' : 'text-green-500'}>{lote.quantidade_atual || 0}</span></span></div>
                   </div>
                   {lote.observacao && (<div className="mt-1 p-2 bg-background/50 rounded border text-xs italic text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" /><span>{lote.observacao}</span></div>)}
                 </button>
