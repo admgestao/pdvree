@@ -131,6 +131,7 @@ export default function Caixa() {
       `caixa_${tipo}`,
       `Valor: R$ ${valor} | Desc: ${payload.descricao}`
     );
+
     toast.success(`${tipo.toUpperCase()} registrado com sucesso!`);
 
     setShowForm(false);
@@ -139,11 +140,15 @@ export default function Caixa() {
     load();
   }
 
-  const totalEntradas = movimentos
+  // Isola os movimentos do turno atual (da última abertura até o momento) para evitar somar repasses de caixa
+  const idxUltimaAbertura = movimentos.findIndex(m => m.tipo.toLowerCase().trim() === 'abertura');
+  const movimentosTurno = idxUltimaAbertura >= 0 ? movimentos.slice(0, idxUltimaAbertura + 1) : movimentos;
+
+  const totalEntradas = movimentosTurno
     .filter(m => ['abertura', 'entrada'].includes(m.tipo.toLowerCase().trim()))
     .reduce((s, m) => s + Number(m.valor), 0);
 
-  const totalSaidas = movimentos
+  const totalSaidas = movimentosTurno
     .filter(m => ['sangria', 'saida', 'fechamento'].includes(m.tipo.toLowerCase().trim()))
     .reduce((s, m) => s + Number(m.valor), 0);
 
@@ -166,6 +171,7 @@ export default function Caixa() {
             <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
                <Wallet className="text-primary h-6 w-6" /> Fluxo de Caixa
             </h1>
+ 
             {caixaAberto ? (
               <span className="px-3 py-1 rounded-full text-[10px] font-black bg-green-500/10 text-green-500 border border-green-500/20 animate-pulse">
                 CAIXA ABERTO
@@ -255,9 +261,9 @@ export default function Caixa() {
 
         <button
           onClick={() => { 
-            setFilterUser(''); 
+            setFilterUser('');
             const today = getTodayString();
-            setDateRange({ start: today, end: today }); 
+            setDateRange({ start: today, end: today });
           }}
           className="bg-secondary hover:bg-secondary/80 p-2.5 rounded-lg transition-colors border border-border"
         >
@@ -389,7 +395,7 @@ export default function Caixa() {
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest ml-1">Valor do Lançamento</label>
                 <div className="relative">
-                  <span className="absolute left-4 top-3 text-primary font-bold text-sm">R$</span>
+                   <span className="absolute left-4 top-3 text-primary font-bold text-sm">R$</span>
                   <input
                     type="number"
                     step="0.01"
@@ -398,7 +404,7 @@ export default function Caixa() {
                     placeholder="0,00"
                     className="w-full bg-secondary border border-border rounded-2xl py-3 pl-10 pr-4 text-foreground font-black text-lg outline-none focus:ring-2 focus:ring-primary/50 transition-all"
                   />
-                </div>
+                 </div>
               </div>
 
               <div className="space-y-1.5">
@@ -424,7 +430,7 @@ export default function Caixa() {
                 <button
                   onClick={handleSave}
                   className={`py-4 rounded-2xl bg-primary text-primary-foreground text-xs font-black uppercase transition-all shadow-lg shadow-primary/20 ${isObrigatorio && 'animate-pulse'}`}
-                >{isObrigatorio ? 'Realizar Abertura Agora' : 'Confirmar'}</button>
+                 >{isObrigatorio ? 'Realizar Abertura Agora' : 'Confirmar'}</button>
               </div>
             </div>
           </div>
