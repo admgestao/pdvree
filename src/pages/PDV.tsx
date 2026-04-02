@@ -232,12 +232,17 @@ export default function PDV() {
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
 
+  // ✅ CORREÇÃO PRINCIPAL: Limpa imediatamente o dropdown e o campo de busca
+  // para evitar cliques acidentais que causam duplicação
   const handleSearchExact = async (e: React.FormEvent) => {
     e.preventDefault();
     const query = search.trim();
     if (!query) return;
 
+    // Limpa o estado imediatamente para evitar interações residuais
     setShowResults(false);
+    setProdutos([]);
+    setSearch('');
 
     const { data: lotesData } = await supabase
       .from('produto_lotes')
@@ -356,20 +361,69 @@ export default function PDV() {
     executeAddToCart(finalProduct);
   };
 
+  // ✅ MELHORIA ADICIONAL: Verificação robusta de duplicatas considerando
+  // diferentes cenários de lotes e produtos
   const executeAddToCart = (product: Produto) => {
     setCart((prev) => {
-      const existing = prev.find((i) => i.id === product.id && i.lote_id === product.lote_id);
-      if (existing) {
-        if (existing.quantity >= product.estoque_atual) { toast.error('Limite atingido'); return prev; }
-        return prev.map((i) => i.cartItemId === existing.cartItemId ? { ...i, quantity: i.quantity + 1 } : i);
+      // Normaliza lote_id para comparação consistente
+      const normalizedLoteId = product.lote_id ?? null;
+
+      // Busca por item existente usando múltiplos critérios
+      let existing = prev.find((i) =>
+        i.id === product.id &&
+        (
+          // Mesmo lote (normalizando null/undefined)
+          (i.lote_id ?? null) === normalizedLoteId ||
+          // Mesmo código de lote (se disponível)
+          (!!product.lote_codigo && i.lote_codigo === product.lote_codigo)
+        )
+      );
+
+      // Fallback: se não encontrou mas há apenas um item do mesmo produto,
+      // considera como o mesmo registro para evitar duplicação
+      if (!existing) {
+        const sameProdItems = prev.filter((i) => i.id === product.id);
+        if (sameProdItems.length === 1) {
+          existing = sameProdItems[0];
+        }
       }
-      return [...prev, {
-        cartItemId: crypto.randomUUID(), id: product.id, nome: product.nome, codigo: product.codigo, marca: product.marca,
-        price: product.preco_venda, preco_custo: product.preco_custo, quantity: 1, stock: product.estoque_atual,
-        discount: 0, discountType: 'percent', lote_id: product.lote_id, lote_codigo: product.lote_codigo
-      }];
+
+      if (existing) {
+        if (existing.quantity >= product.estoque_atual) { 
+          toast.error('Limite atingido'); 
+          return prev; 
+        }
+        return prev.map((i) =>
+          i.cartItemId === existing!.cartItemId
+            ? { ...i, quantity: i.quantity + 1 }
+            : i
+        );
+      }
+
+      // Adiciona novo item se não encontrou duplicata
+      return [
+        ...prev,
+        {
+          cartItemId: crypto.randomUUID(),
+          id: product.id,
+          nome: product.nome,
+          codigo: product.codigo,
+          marca: product.marca,
+          price: product.preco_venda,
+          preco_custo: product.preco_custo,
+          quantity: 1,
+          stock: product.estoque_atual,
+          discount: 0,
+          discountType: 'percent',
+          lote_id: product.lote_id,
+          lote_codigo: product.lote_codigo,
+        },
+      ];
     });
+    
+    // Limpa o estado de busca após adicionar
     setSearch('');
+    setProdutos([]);
     setShowResults(false);
   };
 
@@ -596,7 +650,6 @@ export default function PDV() {
         const forma = formas.find(f => f.id === pgt.forma_pagamento_id);
         const nomeLower = forma?.nome?.toLowerCase() || '';
         if (nomeLower.includes('dinheiro')) {
-          // O valor registrado no caixa é o valor do pagamento menos o troco (se houver)
           const valorParaCaixa = Number(pgt.valor) - (troco > 0 ? troco : 0);
           if (valorParaCaixa > 0) {
             await supabase.from('caixa_movimentos').insert({
@@ -649,7 +702,8 @@ export default function PDV() {
               className="w-full h-10 pl-10 pr-4 rounded-lg border border-input bg-secondary text-sm focus:outline-none" 
             />
             
-            {showResults && (
+            {/* ✅ CORREÇÃO ADICIONAL: Só renderiza o dropdown se houver produtos */}
+            {showResults && produtos.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-xl z-50 max-h-60 overflow-auto scrollbar-thin scrollbar-thumb-zinc-800">
                 {produtos.map((p, idx) => (
                   <button key={p.id + '-' + idx} type="button" onClick={() => addToCart(p)} className={`w-full flex items-center justify-between px-3 py-2.5 hover:bg-accent/50 text-left border-b border-border last:border-0 ${p.estoque_atual <= 0 ? 'bg-red-500/20 border-red-500/40' : ''}`}>
@@ -809,7 +863,6 @@ export default function PDV() {
             }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
             <button disabled={cart.length === 0} onClick={() => { 
               if(!vendedorId) return toast.error("Selecione o Vendedor(a)!"); 
-              // Inicializar com um split sugerindo o total
               setPagamentos([{ 
                 splitId: crypto.randomUUID(), 
                 forma_pagamento_id: formas[0]?.id || '', 
@@ -870,13 +923,11 @@ export default function PDV() {
               </button>
             </div>
 
-            {/* Resumo do total */}
             <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 flex justify-between items-center">
               <span className="text-sm font-bold text-muted-foreground">Total a Pagar</span>
               <span className="text-xl font-black font-mono text-primary">{fCurrency(total)}</span>
             </div>
 
-            {/* Lista de splits de pagamento */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold text-muted-foreground uppercase">Formas de Pagamento</label>
@@ -928,7 +979,6 @@ export default function PDV() {
                           placeholder="0,00"
                           className="flex-1 h-8 bg-background border border-border rounded-lg px-3 font-mono text-sm"
                         />
-                        {/* Botão de atalho para preencher o restante */}
                         {pagamentos.length > 1 && (
                           <button
                             type="button"
@@ -944,7 +994,6 @@ export default function PDV() {
                         )}
                       </div>
 
-                      {/* Troco para dinheiro */}
                       {isDinheiro && pgt.valor > 0 && troco > 0 && (
                         <div className="flex justify-between items-center px-1 pt-1 border-t border-border/50">
                           <span className="text-[10px] font-bold text-muted-foreground uppercase">Troco</span>
@@ -956,7 +1005,6 @@ export default function PDV() {
                 })}
               </div>
 
-              {/* Indicador de saldo restante */}
               <div className={`flex justify-between items-center p-2 rounded-lg text-xs font-bold ${Math.abs(restantePagamento) < 0.01 ? 'bg-green-500/10 text-green-600 border border-green-500/20' : restantePagamento > 0 ? 'bg-yellow-500/10 text-yellow-600 border border-yellow-500/20' : 'bg-blue-500/10 text-blue-600 border border-blue-500/20'}`}>
                 <span>
                   {Math.abs(restantePagamento) < 0.01 
