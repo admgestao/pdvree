@@ -51,8 +51,12 @@ export default function Vendas() {
   const [todosItens, setTodosItens] = useState<VendaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  
+  // Estados para o novo sistema de filtro de datas
+  const [filtroData, setFiltroData] = useState('hoje');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  
   const [selectedVenda, setSelectedVenda] = useState<Venda | null>(null);
   const [itensDetalhe, setItensDetalhe] = useState<VendaItem[]>([]);
   const [dadosEmpresa, setDadosEmpresa] = useState<any>(null);
@@ -67,6 +71,58 @@ export default function Vendas() {
     if (!dateString) return '-';
     return new Date(dateString).toLocaleDateString('pt-BR');
   };
+
+  // Função auxiliar para formatar data considerando fuso horário local
+  const formatDateToISO = (date: Date) => {
+    const d = new Date(date);
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().split('T')[0];
+  };
+
+  // Effect para calcular as datas automaticamente baseado no filtro selecionado
+  useEffect(() => {
+    if (filtroData === 'personalizado') return;
+
+    const hoje = new Date();
+    let inicio = '';
+    let fim = '';
+
+    switch (filtroData) {
+      case 'hoje':
+        inicio = formatDateToISO(hoje);
+        fim = formatDateToISO(hoje);
+        break;
+      case 'ontem':
+        const ontem = new Date(hoje);
+        ontem.setDate(hoje.getDate() - 1);
+        inicio = formatDateToISO(ontem);
+        fim = formatDateToISO(ontem);
+        break;
+      case 'semana':
+        // Semana iniciando na segunda-feira (padrão brasileiro)
+        const diaSemana = hoje.getDay();
+        const diasParaSegunda = diaSemana === 0 ? 6 : diaSemana - 1;
+        const inicioSemana = new Date(hoje);
+        inicioSemana.setDate(hoje.getDate() - diasParaSegunda);
+        inicio = formatDateToISO(inicioSemana);
+        fim = formatDateToISO(hoje);
+        break;
+      case 'mes':
+        const inicioMes = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+        const fimMes = new Date(hoje.getFullYear(), hoje.getMonth() + 1, 0);
+        inicio = formatDateToISO(inicioMes);
+        fim = formatDateToISO(fimMes);
+        break;
+      default:
+        // 'todos' - sem filtro de data
+        inicio = '';
+        fim = '';
+        break;
+    }
+
+    setStartDate(inicio);
+    setEndDate(fim);
+  }, [filtroData]);
 
   useEffect(() => {
     load();
@@ -141,7 +197,6 @@ export default function Vendas() {
           custoUn = prod && prod.custo !== undefined ? Number(prod.custo) : 0;
           codigoProduto = prod?.codigo || '';
           
-          // Se não há lote identificado no nome, pega a observação do primeiro lote encontrado
           if (item.produto_id) {
             const lotesDoItem = lotesData.filter(l => l.produto_id === item.produto_id);
             if (lotesDoItem.length > 0) {
@@ -329,7 +384,7 @@ export default function Vendas() {
               <span>${formatCurrency(i.total)}</span>
             </div>
             <div class="item-detalhe">${i.quantidade} un x ${formatCurrency(i.preco)}</div>
-            ${i.codigo_produto ? `<div class="item-detalhe">Cód: ${i.codigo_produto}${i.lote_observacao ? ` | Lote: ${i.lote_observacao}` : ''}</div>` : ''}
+            ${i.codigo_produto ? `<div class="item-detalhe">Cd: ${i.codigo_produto}${i.lote_observacao ? ` | Lote: ${i.lote_observacao}` : ''}</div>` : ''}
           `).join('')}
           <div class="divisoria"></div>
           <div class="item"><span>Subtotal:</span> <span>${formatCurrency(venda.subtotal)}</span></div>
@@ -625,7 +680,7 @@ export default function Vendas() {
             <tr>
               <td colspan="2"></td>
               <td style="padding: 4px 0; border-bottom: 1px dashed #eee;">
-                ${i.quantidade}x ${i.produto_nome} (Cód: ${i.codigo_produto || '-'} | Lote: ${i.lote_observacao || '-'})
+                ${i.quantidade}x ${i.produto_nome} (Cd: ${i.codigo_produto || '-'} | Lote: ${i.lote_observacao || '-'})
               </td>
               <td style="padding: 4px 0; text-align:right; border-bottom: 1px dashed #eee;">${formatCurrency(custoUn)}</td>
               <td style="padding: 4px 0; text-align:right; border-bottom: 1px dashed #eee;">${formatCurrency(custoTot)}</td>
@@ -787,8 +842,38 @@ export default function Vendas() {
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-input bg-secondary text-foreground"
           />
         </div>
-        <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="h-10 px-3 rounded-lg border border-input bg-secondary" />
-        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="h-10 px-3 rounded-lg border border-input bg-secondary" />
+
+        {/* NOVO SELETOR DE PERÍODO */}
+        <select
+          value={filtroData}
+          onChange={(e) => setFiltroData(e.target.value)}
+          className="h-10 px-3 rounded-lg border border-input bg-secondary text-foreground cursor-pointer"
+        >
+          <option value="todos">Todo o período</option>
+          <option value="hoje">Hoje</option>
+          <option value="ontem">Ontem</option>
+          <option value="semana">Esta Semana</option>
+          <option value="mes">Este Mês</option>
+          <option value="personalizado">Personalizado</option>
+        </select>
+
+        {/* CAMPOS DE DATA PERSONALIZADOS - aparecem apenas quando "personalizado" é selecionado */}
+        {filtroData === 'personalizado' && (
+          <>
+            <input 
+              type="date" 
+              value={startDate} 
+              onChange={(e) => setStartDate(e.target.value)} 
+              className="h-10 px-3 rounded-lg border border-input bg-secondary" 
+            />
+            <input 
+              type="date" 
+              value={endDate} 
+              onChange={(e) => setEndDate(e.target.value)} 
+              className="h-10 px-3 rounded-lg border border-input bg-secondary" 
+            />
+          </>
+        )}
         
         <button 
           onClick={imprimirRelatorioGeral}
@@ -989,7 +1074,7 @@ export default function Vendas() {
                     <div className="flex flex-col gap-0.5 flex-1 mr-4">
                       <span>{i.produto_nome} <b className={isAdminTab ? 'text-blue-500' : 'text-primary'}>x{i.quantidade}</b></span>
                       <span className="text-[10px] text-muted-foreground font-mono">
-                        Cód: <span className="text-foreground/70">{i.codigo_produto || '-'}</span>
+                        Cd: <span className="text-foreground/70">{i.codigo_produto || '-'}</span>
                         {' | '}Lote: <span className="text-foreground/70">{i.lote_observacao || '-'}</span>
                       </span>
                       {isAdminTab && (

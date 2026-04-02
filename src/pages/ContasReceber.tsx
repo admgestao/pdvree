@@ -49,7 +49,16 @@ export default function ContasReceber() {
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase.from('contas_receber').select('*').order('data_vencimento', { ascending: true });
+    const { data, error } = await supabase
+      .from('contas_receber')
+      .select('*')
+      .order('data_vencimento', { ascending: true });
+    
+    if (error) {
+      console.error('Erro ao carregar contas:', error);
+      toast.error('Erro ao carregar registros');
+    }
+    
     if (data) {
       setContas(data);
       const cats = Array.from(new Set(data.map(c => c.categoria).filter(Boolean)));
@@ -101,20 +110,68 @@ export default function ContasReceber() {
     vencido: contas.filter(c => c.status === 'receber' && c.data_vencimento && parseISO(c.data_vencimento) < today).reduce((s, c) => s + Number(c.valor), 0)
   };
 
+  // ✅ FUNÇÃO CORRIGIDA: Trata strings vazias e remove campos protegidos
   async function handleSave() {
     if (!form.descricao || !form.valor || !form.devedor_id) { 
       toast.error('Descrição, Valor e Devedor são obrigatórios');
       return; 
     }
-    const payload = { ...form, valor: Number(form.valor) };
-    const { error } = editing 
-      ? await supabase.from('contas_receber').update(payload).eq('id', editing.id)
-      : await supabase.from('contas_receber').insert([payload]);
+    
+    try {
+      // Prepara o payload convertendo valores e tratando campos vazios
+      const payload: any = { 
+        descricao: form.descricao,
+        valor: Number(form.valor),
+        devedor_id: form.devedor_id,
+        condicao_pagamento: form.condicao_pagamento || null,
+        categoria: form.categoria || null,
+        observacao: form.observacao || null,
+        status: form.status || 'receber'
+      };
 
-    if (error) { toast.error('Erro ao salvar'); return; }
-    toast.success('Registro salvo com sucesso');
-    setShowForm(false);
-    load();
+      // ✅ CORREÇÃO PRINCIPAL: PostgreSQL não aceita string vazia em campos de data
+      payload.data_vencimento = form.data_vencimento || null;
+
+      // ✅ Remove campos que não devem ser enviados (controlados pelo sistema)
+      // Não inclui 'id' nem 'criado_em' no payload
+
+      let error;
+
+      if (editing && editing.id) {
+        // UPDATE: atualiza registro existente
+        const { error: updateError } = await supabase
+          .from('contas_receber')
+          .update(payload)
+          .eq('id', editing.id);
+        error = updateError;
+      } else {
+        // INSERT: cria novo registro
+        const { error: insertError } = await supabase
+          .from('contas_receber')
+          .insert([payload]);
+        error = insertError;
+      }
+
+      if (error) { 
+        console.error('Erro Supabase:', error);
+        toast.error(`Erro ao salvar: ${error.message}`); 
+        return; 
+      }
+      
+      toast.success('Registro salvo com sucesso');
+      
+      // ✅ Reset completo do estado após sucesso
+      setShowForm(false);
+      setEditing(null);
+      setForm(empty);
+      
+      // Recarrega os dados
+      await load();
+      
+    } catch (err: any) {
+      console.error('Erro inesperado:', err);
+      toast.error(`Erro inesperado: ${err?.message || 'Erro desconhecido'}`);
+    }
   }
 
   return (
@@ -195,7 +252,7 @@ export default function ContasReceber() {
               {filtered.map((c) => (
                 <tr key={c.id} className={`group hover:bg-muted/30 transition-colors cursor-pointer ${getVisualStatus(c)}`}>
                   <td className="p-4 font-mono font-bold" onClick={() => setViewing(c)}>
-                    {c.data_vencimento ? format(parseISO(c.data_vencimento), 'dd/MM/yyyy') : '—'}
+                    {c.data_vencimento ? format(parseISO(c.data_vencimento), 'dd/MM/yyyy') : ''}
                   </td>
                   <td className="p-4" onClick={() => setViewing(c)}>
                     <div className="font-bold uppercase text-foreground">{c.descricao}</div>
@@ -207,7 +264,7 @@ export default function ContasReceber() {
                     <span className="bg-secondary px-2 py-0.5 rounded text-[10px] uppercase font-black text-muted-foreground print:bg-transparent">{c.categoria || 'Geral'}</span>
                   </td>
                   <td className="p-4 italic" onClick={() => setViewing(c)}>
-                    {c.condicao_pagamento || '—'}
+                    {c.condicao_pagamento || ''}
                   </td>
                   <td className="p-4 text-right font-black text-sm tabular-nums" onClick={() => setViewing(c)}>
                     R$ {Number(c.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
@@ -215,9 +272,19 @@ export default function ContasReceber() {
                   <td className="p-4 text-center print:hidden" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-2">
                       {c.status === 'receber' && (
-                        <button onClick={() => {
-                          supabase.from('contas_receber').update({ status: 'recebido' }).eq('id', c.id).then(load);
-                          toast.success('Recebimento confirmado');
+                        <button onClick={async () => {
+                          const { error } = await supabase
+                            .from('contas_receber')
+                            .update({ status: 'recebido' })
+                            .eq('id', c.id);
+                          
+                          if (error) {
+                            console.error('Erro ao confirmar recebimento:', error);
+                            toast.error('Erro ao confirmar recebimento');
+                          } else {
+                            toast.success('Recebimento confirmado');
+                            load();
+                          }
                         }} className="p-2 bg-emerald-500/10 text-emerald-500 rounded-lg hover:bg-emerald-500 hover:text-white transition-all">
                           <Check className="h-3.5 w-3.5" />
                         </button>
@@ -245,12 +312,12 @@ export default function ContasReceber() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="md:col-span-2">
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Descrição</label>
-                <input value={form.descricao} onChange={e => setForm({...form, descricao: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
+                <input value={form.descricao || ''} onChange={e => setForm({...form, descricao: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
               <div className="md:col-span-2">
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Devedor</label>
-                <input placeholder="Digite o nome do devedor..." value={form.devedor_id} onChange={e => setForm({...form, devedor_id: e.target.value})}
+                <input placeholder="Digite o nome do devedor..." value={form.devedor_id || ''} onChange={e => setForm({...form, devedor_id: e.target.value})}
                     className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none focus:ring-1 focus:ring-primary" />
               </div>
 
@@ -260,25 +327,29 @@ export default function ContasReceber() {
               </div>
               <div>
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Vencimento</label>
-                <input type="date" value={form.data_vencimento} onChange={e => setForm({...form, data_vencimento: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none font-bold" />
+                <input type="date" value={form.data_vencimento || ''} onChange={e => setForm({...form, data_vencimento: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none font-bold" />
               </div>
               <div>
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Categoria</label>
-                <input list="cats" value={form.categoria} onChange={e => setForm({...form, categoria: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none" />
+                <input list="cats" value={form.categoria || ''} onChange={e => setForm({...form, categoria: e.target.value})} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none" />
                 <datalist id="cats">{categoriasSalvas.map(c => <option key={c} value={c} />)}</datalist>
               </div>
               <div>
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Condição de Receb.</label>
-                <input value={form.condicao_pagamento} onChange={e => setForm({...form, condicao_pagamento: e.target.value})} placeholder="Ex: Cartão, Pix..." className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none" />
+                <input value={form.condicao_pagamento || ''} onChange={e => setForm({...form, condicao_pagamento: e.target.value})} placeholder="Ex: Cartão, Pix..." className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none" />
               </div>
               <div className="md:col-span-2">
                 <label className="text-[10px] font-black text-muted-foreground uppercase ml-1">Observações</label>
-                <textarea value={form.observacao} onChange={e => setForm({...form, observacao: e.target.value})} rows={2} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none resize-none" />
+                <textarea value={form.observacao || ''} onChange={e => setForm({...form, observacao: e.target.value})} rows={2} className="w-full bg-secondary border border-border rounded-xl py-2 px-4 text-sm outline-none resize-none" />
               </div>
             </div>
 
             <div className="pt-6 grid grid-cols-2 gap-3">
-              <button onClick={() => setShowForm(false)} className="py-3 rounded-xl bg-muted text-muted-foreground text-xs font-black uppercase hover:bg-muted/80 transition-colors">Cancelar</button>
+              <button onClick={() => { 
+                setShowForm(false); 
+                setEditing(null); 
+                setForm(empty); 
+              }} className="py-3 rounded-xl bg-muted text-muted-foreground text-xs font-black uppercase hover:bg-muted/80 transition-colors">Cancelar</button>
               <button onClick={handleSave} className="py-3 rounded-xl bg-primary text-primary-foreground text-xs font-black uppercase hover:opacity-90 shadow-lg">Salvar Registro</button>
             </div>
           </div>
@@ -299,9 +370,9 @@ export default function ContasReceber() {
             </div>
             <div className="grid grid-cols-2 gap-6 border-t border-border pt-6">
               <div><p className="text-[9px] font-black text-muted-foreground uppercase">Valor Esperado</p><p className="font-black text-xl text-foreground">R$ {Number(viewing.valor).toFixed(2)}</p></div>
-              <div><p className="text-[9px] font-black text-muted-foreground uppercase">Vencimento</p><p className="font-black text-xl text-foreground">{viewing.data_vencimento ? format(parseISO(viewing.data_vencimento), 'dd/MM/yyyy') : '—'}</p></div>
+              <div><p className="text-[9px] font-black text-muted-foreground uppercase">Vencimento</p><p className="font-black text-xl text-foreground">{viewing.data_vencimento ? format(parseISO(viewing.data_vencimento), 'dd/MM/yyyy') : ''}</p></div>
               <div className="col-span-2"><p className="text-[9px] font-black text-muted-foreground uppercase">Devedor (Pagador)</p><p className="font-bold text-foreground text-base">{viewing.devedor_id}</p></div>
-              <div><p className="text-[9px] font-black text-muted-foreground uppercase">Condição</p><p className="font-bold text-foreground">{viewing.condicao_pagamento || '—'}</p></div>
+              <div><p className="text-[9px] font-black text-muted-foreground uppercase">Condição</p><p className="font-bold text-foreground">{viewing.condicao_pagamento || ''}</p></div>
               <div><p className="text-[9px] font-black text-muted-foreground uppercase">Categoria</p><p className="font-bold text-foreground">{viewing.categoria || 'Geral'}</p></div>
               <div className="col-span-2 bg-muted/50 p-4 rounded-xl"><p className="text-[9px] font-black text-muted-foreground uppercase mb-1">Notas</p><p className="text-xs italic text-muted-foreground font-medium">{viewing.observacao || 'Nenhuma observação.'}</p></div>
             </div>

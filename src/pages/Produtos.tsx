@@ -248,12 +248,26 @@ export default function Produtos() {
     return { status: 'ok', qtd: 0 };
   }
 
+  // ═══ BUSCA INTELIGENTE IMPLEMENTADA ═══
+  // Alteração 1: Busca por múltiplos termos (palavras separadas)
+  // Alteração 2: Inclusão dos códigos de lote na busca
   const filtered = produtos.filter((p) => {
-    const matchesSearch = 
-      p.nome?.toLowerCase().includes(search.toLowerCase()) ||
-      p.marca?.toLowerCase().includes(search.toLowerCase()) ||
-      p.codigo?.toLowerCase().includes(search.toLowerCase()) ||
-      p.categoria?.toLowerCase().includes(search.toLowerCase());
+    // Divide o texto de busca em termos individuais, removendo espaços extras
+    const searchTerms = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    
+    // Monta um texto único com todos os campos pesquisáveis do produto
+    // Inclui também todos os códigos de barras dos lotes associados
+    const searchableText = [
+      p.nome,
+      p.marca, 
+      p.codigo,
+      p.categoria,
+      ...(p.lotes?.map(l => l.codigo_barras) || [])
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    // Verifica se TODOS os termos digitados estão presentes no texto pesquisável
+    // Isso permite buscas como "makita disco" encontrar "DISCO DE CORTE MAKITA"
+    const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => searchableText.includes(term));
     
     const matchesEstoque = p.estoque_atual <= maxEstoqueFilter;
     const matchesValidade = filtroValidade ? p.data_validade === filtroValidade : true;
@@ -529,11 +543,9 @@ export default function Produtos() {
     load();
   }
 
-  // ═══ NOVA FUNCIONALIDADE: Excluir Lote do Histórico ═══
   async function handleDeleteLote(lote: any) {
     if (!editing) return;
     
-    // Confirmação com detalhes do lote
     if (!confirm(`Excluir este lote (${lote.codigo_barras || 'Sem código'})?\n\nQuantidade atual: ${lote.quantidade_atual || lote.quantidade}\nEsta quantidade será subtraída do estoque do produto "${editing.nome}".`)) {
       return;
     }
@@ -546,7 +558,6 @@ export default function Produtos() {
     const lucroProduto = Number(editing.lucro_produto) || 0;
 
     try {
-      // Exclui o lote da base de dados
       const { error: loteError } = await supabase
         .from('produto_lotes')
         .delete()
@@ -557,7 +568,6 @@ export default function Produtos() {
         return;
       }
 
-      // Atualiza o estoque e valores derivados do produto
       const { error: prodError } = await supabase
         .from('produtos')
         .update({
@@ -572,7 +582,6 @@ export default function Produtos() {
         return;
       }
 
-      // Registra a ação no sistema de auditoria
       await logAction(
         user?.name || '', 
         'excluir_lote', 
@@ -581,7 +590,6 @@ export default function Produtos() {
 
       toast.success(`Lote excluído com sucesso! ${qtdSubtrair} unidade(s) removida(s) do estoque.`);
       
-      // Recarrega os dados para atualizar a interface
       load();
       
     } catch (error) {
@@ -1019,7 +1027,7 @@ export default function Produtos() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome, marca, código..."
+            placeholder="Buscar por nome, marca, código, lotes... (digite vários termos)"
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
         </div>
@@ -1625,7 +1633,6 @@ export default function Produtos() {
                           <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
                           <td className="p-3 text-xs max-w-[200px] truncate" title={l.observacao}>{l.observacao || '-'}</td>
                           <td className="p-3 text-right">
-                            {/* ═══ BOTÕES DE AÇÃO: Editar + Excluir ═══ */}
                             <div className="flex justify-end gap-1">
                               <button
                                 onClick={() => handleEditarLoteHistorico(l)}
