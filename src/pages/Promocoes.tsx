@@ -112,37 +112,87 @@ export default function Promocoes() {
     loadFormas();
   }, []);
 
-  async function load() {
-    setLoading(true);
-    const { data } = await supabase
-      .from('promocoes')
-      .select('*, produtos:produto_id(nome, codigo, preco_venda), produto_lotes:lote_id(codigo_barras, observacao)')
-      .order('created_at', { ascending: false });
+async function load() {
+  setLoading(true);
 
-    // Transformando direto em uma lista plana (Grid Simples)
-    const flatData = (data || []).map((p: any) => ({
-      id: p.id,
-      grupo_id: p.grupo_id,
-      nome_promocao: p.nome_promocao || 'Campanha Padrão',
-      data_inicio: p.data_inicio,
-      data_fim: p.data_fim,
-      status: p.status ?? true,
-      produto_id: p.produto_id,
-      produto_nome: p.produtos?.nome || 'Produto Removido',
-      codigo: p.produtos?.codigo || '',
-      preco_venda: p.produtos?.preco_venda || 0,
-      lote_id: p.lote_id,
-      lote_codigo: p.produto_lotes?.codigo_barras || 'Todos',
-      observacao_lote: p.produto_lotes?.observacao || '',
-      preco_promocional: p.preco_promocional,
-      quantidade_minima: p.quantidade_minima,
-      quantidade_maxima: p.quantidade_maxima,
-      condicao_pagamento: p.condicao_pagamento
-    }));
+  try {
+    // Query 1: busca todas as promoções sem join
+    const { data: promoData, error: promoError } = await supabase
+      .from('promocoes')
+      .select('*')
+      .order('data_inicio', { ascending: false });
+
+    if (promoError) throw promoError;
+    
+    if (!promoData || promoData.length === 0) {
+      setPromocoesFlat([]);
+      setLoading(false);
+      return;
+    }
+
+    // Coleta IDs únicos para as queries de enriquecimento
+    const produtoIds = [...new Set(promoData.map(p => p.produto_id).filter(Boolean))];
+    const loteIds = [...new Set(promoData.map(p => p.lote_id).filter(Boolean))];
+
+    // Query 2: busca produtos relacionados
+    const { data: produtosData } = await supabase
+      .from('produtos')
+      .select('id, nome, codigo, preco_venda')
+      .in('id', produtoIds);
+
+    // Query 3: busca lotes relacionados (apenas se houver lote_ids)
+    const { data: lotesData } = loteIds.length > 0
+      ? await supabase
+          .from('produto_lotes')
+          .select('id, codigo_barras, observacao')
+          .in('id', loteIds)
+      : { data: [] };
+
+    // Monta maps para lookup eficiente O(1)
+    const produtosMap = new Map(
+      (produtosData || []).map(p => [p.id, p])
+    );
+    const lotesMap = new Map(
+      (lotesData || []).map(l => [l.id, l])
+    );
+
+    // Monta a lista plana enriquecida
+    const flatData: PromocaoRow[] = promoData.map(p => {
+      const produto = produtosMap.get(p.produto_id);
+      const lote = lotesMap.get(p.lote_id);
+
+      return {
+        id: p.id,
+        grupo_id: p.grupo_id,
+        nome_promocao: p.nome_promocao || 'Campanha Padrão',
+        data_inicio: p.data_inicio,
+        data_fim: p.data_fim,
+        status: p.status ?? true,
+        produto_id: p.produto_id,
+        produto_nome: produto?.nome || 'Produto Removido',
+        codigo: produto?.codigo || '',
+        preco_venda: produto?.preco_venda || 0,
+        lote_id: p.lote_id,
+        lote_codigo: lote?.codigo_barras || 'Todos',
+        observacao_lote: lote?.observacao || '',
+        preco_promocional: p.preco_promocional,
+        quantidade_minima: p.quantidade_minima,
+        quantidade_maxima: p.quantidade_maxima,
+        condicao_pagamento: p.condicao_pagamento
+      };
+    });
 
     setPromocoesFlat(flatData);
+
+  } catch (error: any) {
+    console.error('Erro ao carregar promoções:', error);
+    toast.error('Erro ao carregar promoções: ' + error.message);
+    setPromocoesFlat([]);
+  } finally {
     setLoading(false);
   }
+}
+
 
   async function loadFormas() {
     const { data } = await supabase.from('formas_pagamento').select('id, nome').eq('ativo', true);

@@ -529,6 +529,67 @@ export default function Produtos() {
     load();
   }
 
+  // ═══ NOVA FUNCIONALIDADE: Excluir Lote do Histórico ═══
+  async function handleDeleteLote(lote: any) {
+    if (!editing) return;
+    
+    // Confirmação com detalhes do lote
+    if (!confirm(`Excluir este lote (${lote.codigo_barras || 'Sem código'})?\n\nQuantidade atual: ${lote.quantidade_atual || lote.quantidade}\nEsta quantidade será subtraída do estoque do produto "${editing.nome}".`)) {
+      return;
+    }
+
+    const qtdSubtrair = Number(lote.quantidade_atual || lote.quantidade) || 0;
+    const estoqueAtual = Number(editing.estoque_atual) || 0;
+    const novoEstoque = Math.max(0, estoqueAtual - qtdSubtrair);
+    
+    const custo = Number(editing.custo) || 0;
+    const lucroProduto = Number(editing.lucro_produto) || 0;
+
+    try {
+      // Exclui o lote da base de dados
+      const { error: loteError } = await supabase
+        .from('produto_lotes')
+        .delete()
+        .eq('id', lote.id);
+
+      if (loteError) {
+        toast.error('Erro ao excluir lote: ' + loteError.message);
+        return;
+      }
+
+      // Atualiza o estoque e valores derivados do produto
+      const { error: prodError } = await supabase
+        .from('produtos')
+        .update({
+          estoque_atual: novoEstoque,
+          valor_estoque: custo * novoEstoque,
+          lucro_estoque: lucroProduto * novoEstoque
+        })
+        .eq('id', editing.id);
+
+      if (prodError) {
+        toast.error('Erro ao atualizar estoque do produto: ' + prodError.message);
+        return;
+      }
+
+      // Registra a ação no sistema de auditoria
+      await logAction(
+        user?.name || '', 
+        'excluir_lote', 
+        `${editing.nome} - Lote: ${lote.codigo_barras || lote.id} (Qtd subtraída: ${qtdSubtrair})`
+      );
+
+      toast.success(`Lote excluído com sucesso! ${qtdSubtrair} unidade(s) removida(s) do estoque.`);
+      
+      // Recarrega os dados para atualizar a interface
+      load();
+      
+    } catch (error) {
+      console.error('Erro ao excluir lote:', error);
+      toast.error('Erro inesperado ao excluir lote.');
+    }
+  }
+
   function updateField(field: string, value: any) {
     let nextValue = value;
     if (['custo', 'preco_venda'].includes(field)) {
@@ -1141,7 +1202,6 @@ export default function Produtos() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* ALTERAÇÃO 1: Campo Nome liberado para edição */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Nome *</label>
                 <input 
@@ -1150,7 +1210,6 @@ export default function Produtos() {
                   className="w-full p-3 bg-muted/30 border border-border rounded-xl text-xs font-bold uppercase outline-none focus:border-primary/40 text-foreground" 
                 />
               </div>
-              {/* ALTERAÇÃO 1: Campo Marca liberado para edição */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Marca</label>
                 <input 
@@ -1245,7 +1304,6 @@ export default function Produtos() {
               </div>
 
               <div className="grid grid-cols-2 gap-4 md:col-span-2">
-                {/* ALTERAÇÃO 1: Campo Categoria liberado para edição */}
                 <div className="space-y-1 relative">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Categoria</label>
                   <input 
@@ -1277,7 +1335,6 @@ export default function Produtos() {
                     </ul>
                   )}
                 </div>
-                {/* ALTERAÇÃO 1: Campo Fornecedor liberado para edição */}
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Fornecedor</label>
                   <select 
@@ -1317,7 +1374,6 @@ export default function Produtos() {
                 </div>
               </div>
 
-              {/* ALTERAÇÃO 1: Campo Estoque Mínimo já estava liberado para edição */}
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase text-muted-foreground ml-1 tracking-widest">Estoque Mínimo</label>
                 <input 
@@ -1534,7 +1590,6 @@ export default function Produtos() {
             </div>
 
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
-               {/* ALTERAÇÃO 2: Adicionada coluna "Venda" no histórico de lotes */}
                <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
@@ -1546,7 +1601,7 @@ export default function Produtos() {
                     <th className="p-3 text-right">Inicial</th>
                     <th className="p-3 text-right">Saldo</th>
                     <th className="p-3">Observação</th>
-                    <th className="p-3 text-right">Ação</th>
+                    <th className="p-3 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -1565,15 +1620,28 @@ export default function Produtos() {
                             {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                           </td>
                           <td className="p-3 text-right font-mono text-orange-400">{formatCurrency(l.custo)}</td>
-                          {/* ALTERAÇÃO 2: Célula com o valor de venda do lote */}
                           <td className="p-3 text-right font-mono text-green-400">{formatCurrency(l.preco_venda || 0)}</td>
                           <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
                           <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>
                           <td className="p-3 text-xs max-w-[200px] truncate" title={l.observacao}>{l.observacao || '-'}</td>
                           <td className="p-3 text-right">
-                            <button onClick={() => handleEditarLoteHistorico(l)} className="p-1.5 rounded hover:bg-primary/20 bg-primary/10 text-primary transition-colors">
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
+                            {/* ═══ BOTÕES DE AÇÃO: Editar + Excluir ═══ */}
+                            <div className="flex justify-end gap-1">
+                              <button
+                                onClick={() => handleEditarLoteHistorico(l)}
+                                className="p-1.5 rounded hover:bg-primary/20 bg-primary/10 text-primary transition-colors"
+                                title="Editar lote"
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteLote(l)}
+                                className="p-1.5 rounded hover:bg-red-500/20 bg-red-500/10 text-red-500 transition-colors"
+                                title="Excluir lote e subtrair do estoque"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1607,7 +1675,6 @@ export default function Produtos() {
             </div>
             
             <div className="flex-1 overflow-auto p-4 scrollbar-thin scrollbar-thumb-muted">
-              {/* ALTERAÇÃO 2: Adicionada coluna "Venda" também na tabela de conflito */}
               <table className="w-full text-xs text-left">
                 <thead className="text-[10px] font-black uppercase text-muted-foreground border-b border-border">
                   <tr>
@@ -1635,7 +1702,6 @@ export default function Produtos() {
                           {l.data_validade ? new Date(l.data_validade).toLocaleDateString('pt-BR') : '-'}
                         </td>
                         <td className="p-3 text-right font-mono text-orange-400">{formatCurrency(l.custo)}</td>
-                        {/* ALTERAÇÃO 2: Célula com o valor de venda do lote na tabela de conflito */}
                         <td className="p-3 text-right font-mono text-green-400">{formatCurrency(l.preco_venda || 0)}</td>
                         <td className="p-3 text-right font-mono">{l.quantidade_inicial || l.quantidade}</td>
                         <td className={`p-3 text-right font-mono font-black ${isEsgotado ? 'text-muted-foreground' : 'text-foreground'}`}>{lQtdAtual}</td>

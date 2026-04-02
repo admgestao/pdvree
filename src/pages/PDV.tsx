@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Search, Plus, Minus, Trash2, ShoppingCart, User, Percent, DollarSign,
-  FileText, CreditCard, X, Check, AlertCircle, Info, UserCircle, Tag
+  FileText, CreditCard, X, Check, AlertCircle, Info, UserCircle, Tag, PlusCircle
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,12 +14,10 @@ interface CartItem {
   codigo: string;
   marca?: string;
   price: number;
-  // Preço Base de Venda
   preco_custo: number;
   quantity: number;
   stock: number;
   discount: number;
-  // Desconto manual
   discountType: 'percent' | 'fixed';
   lote_id?: string;
   lote_codigo?: string;
@@ -77,6 +75,12 @@ interface Usuario {
   nome_usuario: string;
 }
 
+interface PagamentoSplit {
+  splitId: string;
+  forma_pagamento_id: string;
+  valor: number;
+}
+
 export default function PDV() {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
@@ -95,13 +99,10 @@ export default function PDV() {
   
   const [clientes, setClientes] = useState<Pessoa[]>([]);
   const [formas, setFormas] = useState<FormaPagamento[]>([]);
-  const [formaPagamentoId, setFormPagamentoId] = useState('');
   const [showFinalize, setShowFinalize] = useState(false);
-  const [valorRecebido, setValorRecebido] = useState(0);
   const [saving, setSaving] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   
-  // Lista de Promoções Ativas do BD
   const [promocoesAtivas, setPromocoesAtivas] = useState<PromoAtiva[]>([]);
   const [usarCredito, setUsarCredito] = useState(false);
   const [vendedores, setVendedores] = useState<Usuario[]>([]);
@@ -109,6 +110,9 @@ export default function PDV() {
     return localStorage.getItem('@pdv:vendedor_id') || '';
   });
   const [lotSelectionItem, setLotSelectionItem] = useState<Produto | null>(null);
+
+  // Estados para múltiplos pagamentos
+  const [pagamentos, setPagamentos] = useState<PagamentoSplit[]>([]);
 
   const darkScrollbarClass = "scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent overflow-y-auto";
   const customScrollStyles = {
@@ -233,10 +237,8 @@ export default function PDV() {
     const query = search.trim();
     if (!query) return;
 
-    // Se apertou enter (ou o leitor bipou), esconde imediatamente os resultados para não piscar na tela
     setShowResults(false);
 
-    // 1. Tenta buscar lotes pelo código de barras bipado
     const { data: lotesData } = await supabase
       .from('produto_lotes')
       .select('*, produtos(*)')
@@ -244,7 +246,6 @@ export default function PDV() {
 
     if (lotesData && lotesData.length > 0) {
       if (lotesData.length === 1) {
-        // Apenas um lote com esse código de barras, vai direto para o carrinho
         const lote = lotesData[0];
         const p = lote.produtos;
         if (p) {
@@ -259,7 +260,6 @@ export default function PDV() {
           toast.error('Produto base não encontrado para este lote.');
         }
       } else {
-        // Múltiplos lotes (ou produtos diferentes) com o mesmo código de barras
         const baseProd = lotesData[0].produtos;
         if (baseProd) {
           setLotSelectionItem({
@@ -279,7 +279,6 @@ export default function PDV() {
         }
       }
     } else {
-      // 2. Não achou lote pelo código de barras, tenta buscar no produto principal
       const { data: prodsData } = await supabase
         .from('produtos')
         .select('*')
@@ -290,7 +289,6 @@ export default function PDV() {
         const p = prodsData[0];
         if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
-        // Verifica se esse produto tem lotes cadastrados
         const { data: lotesDoProduto } = await supabase
           .from('produto_lotes')
           .select('*')
@@ -320,7 +318,6 @@ export default function PDV() {
             lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
           });
         } else {
-          // Produto comum sem lote
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
@@ -405,23 +402,20 @@ export default function PDV() {
     setCart((prev) => prev.filter((i) => i.cartItemId !== cartItemId)); 
   };
 
-  // --- LÓGICA DE PROMOÇÃO DINÂMICA ---
   const getPromoForItem = (item: CartItem, currentFormaPgto?: string) => {
     const matches = promocoesAtivas.filter(p => p.produto_id === item.id && (!p.lote_id || p.lote_id === item.lote_id));
-    // Filtra regras de QTD
     const validQty = matches.filter(p => item.quantity >= (p.quantidade_minima || 1) && (!p.quantidade_maxima || item.quantity <= p.quantidade_maxima));
-    // Filtra Forma de Pagamento (se a forma foi informada)
     const validPgto = validQty.filter(p => p.condicao_pagamento === 'todas' || p.condicao_pagamento === currentFormaPgto);
     
     if (validPgto.length > 0) {
-      // Retorna a que oferecer o menor preço
       return validPgto.reduce((prev, curr) => prev.preco_promocional < curr.preco_promocional ? prev : curr);
     }
     return null;
   };
 
   const getDynamicItemPrice = (item: CartItem) => {
-    const promo = getPromoForItem(item, formaPagamentoId);
+    const formaRefId = pagamentos.length > 0 ? pagamentos[0].forma_pagamento_id : '';
+    const promo = getPromoForItem(item, formaRefId);
     return { unitPrice: promo ? promo.preco_promocional : item.price, promo };
   };
 
@@ -433,7 +427,6 @@ export default function PDV() {
     return Math.max(0, base - item.discount);
   };
 
-  // Cálculos do Carrinho
   const subtotalSemDesconto = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
   const totalItensComDescontoIndividual = cart.reduce((sum, item) => sum + getItemTotal(item), 0);
   const descontoDosItens = subtotalSemDesconto - totalItensComDescontoIndividual;
@@ -448,14 +441,55 @@ export default function PDV() {
   const creditoDisponivel = clienteObj?.credito || 0;
   const valorAbatidoCredito = usarCredito ? Math.min(totalBruto, creditoDisponivel) : 0;
   const total = totalBruto - valorAbatidoCredito;
-  const troco = valorRecebido > total ? valorRecebido - total : 0;
   const lucroLiquido = (totalItensComDescontoIndividual - descontoGeralVal) - totalCustoItens + (custoNoLucro ? Number(custoAdicional) : 0);
+
+  // Lógica dos múltiplos pagamentos
+  const totalPagamentos = pagamentos.reduce((s, p) => s + (Number(p.valor) || 0), 0);
+  const restantePagamento = total - totalPagamentos;
+
+  const addSplit = () => {
+    setPagamentos(prev => [...prev, { 
+      splitId: crypto.randomUUID(), 
+      forma_pagamento_id: '', 
+      valor: Math.max(0, restantePagamento) 
+    }]);
+  };
+
+  const removeSplit = (splitId: string) => {
+    setPagamentos(prev => prev.filter(p => p.splitId !== splitId));
+  };
+
+  const updateSplit = (splitId: string, field: keyof Omit<PagamentoSplit, 'splitId'>, value: any) => {
+    setPagamentos(prev => prev.map(p => 
+      p.splitId === splitId ? { ...p, [field]: value } : p
+    ));
+  };
+
+  // Troco calculado apenas sobre dinheiro
+  const troco = (() => {
+    const pagamentosDinheiro = pagamentos.filter(p => {
+      const forma = formas.find(f => f.id === p.forma_pagamento_id);
+      return forma?.nome.toLowerCase().includes('dinheiro');
+    });
+    const totalDinheiro = pagamentosDinheiro.reduce((s, p) => s + Number(p.valor), 0);
+    const outrosPagamentos = pagamentos.filter(p => {
+      const forma = formas.find(f => f.id === p.forma_pagamento_id);
+      return !forma?.nome.toLowerCase().includes('dinheiro');
+    });
+    const totalOutros = outrosPagamentos.reduce((s, p) => s + Number(p.valor), 0);
+    const restanteParaDinheiro = total - totalOutros;
+    return Math.max(0, totalDinheiro - restanteParaDinheiro);
+  })();
 
   function selectCliente(id: string) {
     const c = clientes.find(x => x.id === id);
-    if (c) { setClienteObj(c); setClienteManual('');
-      setUsarCredito(false); } 
-    else { setClienteObj(null); }
+    if (c) { 
+      setClienteObj(c); 
+      setClienteManual(''); 
+      setUsarCredito(false); 
+    } else { 
+      setClienteObj(null); 
+    }
   }
 
   const handleVendedorChange = (id: string) => {
@@ -465,33 +499,62 @@ export default function PDV() {
 
   async function finalizeSale() {
     if (cart.length === 0) return;
-    if (!formaPagamentoId) { toast.error('Selecione a forma de pagamento'); return; }
-    if (!vendedorId) { toast.error('Selecione o Vendedor(a) antes de finalizar!');
-      return; }
+    if (pagamentos.length === 0 || pagamentos.some(p => !p.forma_pagamento_id)) {
+      toast.error('Preencha todas as formas de pagamento'); 
+      return;
+    }
+    if (Math.abs(totalPagamentos - total) > 0.01 && totalPagamentos < total) {
+      toast.error(`Falta ${fCurrency(restantePagamento)} para cobrir o total`); 
+      return;
+    }
+    if (!vendedorId) { 
+      toast.error('Selecione o Vendedor(a) antes de finalizar!'); 
+      return; 
+    }
 
     setSaving(true);
     try {
       const selectedVendedor = vendedores.find(v => v.id === vendedorId);
+      const formaPrincipalId = pagamentos.length > 0 ? pagamentos[0].forma_pagamento_id : null;
+
       const { data: venda, error: vendaErr } = await supabase.from('vendas').insert({
-        cliente_id: clienteObj?.id || null, cliente_nome_manual: clienteObj ? null : clienteManual,
-        usuario_id: user?.id || 'Operador', vendedor_nome: selectedVendedor?.nome_usuario || 'Não Informado',
-        subtotal: subtotalSemDesconto, desconto: totalDescontoAplicado, custo_adicional: Number(custoAdicional) || 0,
-        desc_custo_adicional: descCusto, custo_no_lucro: custoNoLucro, total: total, total_custo: totalCustoItens, 
-        lucro_liquido: lucroLiquido, valor_credito_usado: valorAbatidoCredito, forma_pagamento_id: formaPagamentoId,
-        troco, observacao,
+        cliente_id: clienteObj?.id || null,
+        cliente_nome_manual: clienteObj ? null : clienteManual,
+        usuario_id: user?.id || 'Operador',
+        vendedor_nome: selectedVendedor?.nome_usuario || 'Não Informado',
+        subtotal: subtotalSemDesconto,
+        desconto: totalDescontoAplicado,
+        custo_adicional: Number(custoAdicional) || 0,
+        desc_custo_adicional: descCusto,
+        custo_no_lucro: custoNoLucro,
+        total: total,
+        total_custo: totalCustoItens,
+        lucro_liquido: lucroLiquido,
+        valor_credito_usado: valorAbatidoCredito,
+        forma_pagamento_id: formaPrincipalId,
+        troco,
+        observacao,
       }).select('id').single();
       
       if (vendaErr) throw vendaErr;
 
-      // Salvando os itens na venda com o preço aplicado (dinâmico)
+      // Salvar pagamentos detalhados
+      const pagamentosParaSalvar = pagamentos.map(p => ({
+        venda_id: venda.id,
+        forma_pagamento_id: p.forma_pagamento_id,
+        valor: Number(p.valor) || 0,
+      }));
+      const { error: pgtoErr } = await supabase.from('vendas_pagamentos').insert(pagamentosParaSalvar);
+      if (pgtoErr) throw pgtoErr;
+
       const itensParaSalvar = cart.map(item => {
-        const { unitPrice, promo } = getDynamicItemPrice(item);
+        const { unitPrice } = getDynamicItemPrice(item);
         return {
           venda_id: venda.id,
           produto_id: item.id,
           produto_nome: item.nome,
           quantidade: item.quantity,
-          preco: unitPrice, // Salva o preço cobrado (promocional ou não)
+          preco: unitPrice,
           desconto_item: item.discount,
           desconto_tipo_item: item.discountType,
           total: getItemTotal(item)
@@ -502,30 +565,57 @@ export default function PDV() {
       if (itensErr) throw itensErr;
 
       for (const item of cart) {
-        await supabase.from('produtos').update({ estoque_atual: item.stock - item.quantity }).eq('id', item.id);
+        await supabase.from('produtos').update({ 
+          estoque_atual: item.stock - item.quantity 
+        }).eq('id', item.id);
+        
         if (item.lote_id) {
-          const { data: lote } = await supabase.from('produto_lotes').select('quantidade_atual, quantidade').eq('id', item.lote_id).single();
+          const { data: lote } = await supabase.from('produto_lotes')
+            .select('quantidade_atual, quantidade')
+            .eq('id', item.lote_id)
+            .single();
           if (lote) {
-             const novaQtd = Number(lote.quantidade_atual || lote.quantidade || 0) - item.quantity;
-             await supabase.from('produto_lotes').update({ quantidade_atual: novaQtd, quantidade: novaQtd, status: novaQtd <= 0 ? 'esgotado' : 'ativo' }).eq('id', item.lote_id);
+            const novaQtd = Number(lote.quantidade_atual || lote.quantidade || 0) - item.quantity;
+            await supabase.from('produto_lotes').update({ 
+              quantidade_atual: novaQtd, 
+              quantidade: novaQtd, 
+              status: novaQtd <= 0 ? 'esgotado' : 'ativo' 
+            }).eq('id', item.lote_id);
           }
         }
       }
 
       if (valorAbatidoCredito > 0 && clienteObj) {
-        await supabase.from('pessoas').update({ credito: clienteObj.credito - valorAbatidoCredito }).eq('id', clienteObj.id);
+        await supabase.from('pessoas').update({ 
+          credito: clienteObj.credito - valorAbatidoCredito 
+        }).eq('id', clienteObj.id);
       }
 
-      const formaNome = formas.find(f => f.id === formaPagamentoId)?.nome.toLowerCase() || '';
-      if (formaNome.includes('dinheiro')) {
-        await supabase.from('caixa_movimentos').insert({ usuario_id: user?.name || user?.id || 'Sistema', tipo: 'entrada', valor: total, descricao: 'Venda realizada.' });
+      // Registro automático no caixa para cada split em dinheiro
+      for (const pgt of pagamentos) {
+        const forma = formas.find(f => f.id === pgt.forma_pagamento_id);
+        const nomeLower = forma?.nome?.toLowerCase() || '';
+        if (nomeLower.includes('dinheiro')) {
+          // O valor registrado no caixa é o valor do pagamento menos o troco (se houver)
+          const valorParaCaixa = Number(pgt.valor) - (troco > 0 ? troco : 0);
+          if (valorParaCaixa > 0) {
+            await supabase.from('caixa_movimentos').insert({
+              usuario_id: selectedVendedor?.nome_usuario || user?.nome_usuario || user?.name || 'Sistema',
+              tipo: 'entrada',
+              valor: valorParaCaixa,
+              descricao: `Venda #${venda.id.substring(0, 8)} - ${forma?.nome || 'Dinheiro'}`,
+            });
+          }
+        }
       }
 
       setShowSuccess(true);
       setShowFinalize(false);
       setTimeout(() => { window.location.reload(); }, 2000);
-    } catch (err: any) { toast.error('Erro ao finalizar: ' + err.message); }
-    setSaving(false);
+    } catch (err: any) { 
+      toast.error('Erro ao finalizar: ' + err.message); 
+      setSaving(false);
+    }
   }
 
   return (
@@ -535,10 +625,16 @@ export default function PDV() {
         .animate-pulse-yellow { animation: pulse-yellow 1.5s infinite; }
       `}</style>
 
+      {/* COLUNA ESQUERDA - CARRINHO */}
       <div className="flex-1 flex flex-col border-r border-border min-w-0">
         <div className="p-3 border-b border-border flex items-center justify-between bg-card/50">
-          <div className="flex items-center gap-4"><h1 className="text-xl font-black tracking-tighter text-primary">P.D.V</h1></div>
-          <div className="flex items-center gap-2 text-muted-foreground"><ShoppingCart className="h-4 w-4" /><span className="text-xs font-bold uppercase">Terminal de Vendas</span></div>
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-black tracking-tighter text-primary">P.D.V</h1>
+          </div>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <ShoppingCart className="h-4 w-4" />
+            <span className="text-xs font-bold uppercase">Terminal de Vendas</span>
+          </div>
         </div>
 
         <div className="p-3 border-b border-border">
@@ -624,6 +720,7 @@ export default function PDV() {
         </div>
       </div>
 
+      {/* COLUNA DIREITA - PAINEL */}
       <div className={`w-full lg:w-80 xl:w-96 flex flex-col border-t lg:border-t-0 border-border bg-card/30 ${darkScrollbarClass}`} style={customScrollStyles}>
         <div className="flex-1 p-4 space-y-4">
           <div className="space-y-1.5">
@@ -702,12 +799,29 @@ export default function PDV() {
             <span className="text-xl font-bold font-mono text-primary">{fCurrency(total)}</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={() => { setCart([]); setCustoAdicional(0); setDescCusto(''); setUsarCredito(false); setObservacao(''); }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
-            <button disabled={cart.length === 0} onClick={() => { if(!vendedorId) return toast.error("Selecione o Vendedor(a)!"); setShowFinalize(true); }} className="h-10 rounded-lg text-primary-foreground text-sm font-semibold flex items-center justify-center gap-1.5 transition-all bg-primary hover:opacity-90"><CreditCard className="h-3.5 w-3.5" /> Finalizar</button>
+            <button onClick={() => { 
+              setCart([]); 
+              setCustoAdicional(0); 
+              setDescCusto(''); 
+              setUsarCredito(false); 
+              setObservacao(''); 
+              setPagamentos([]);
+            }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
+            <button disabled={cart.length === 0} onClick={() => { 
+              if(!vendedorId) return toast.error("Selecione o Vendedor(a)!"); 
+              // Inicializar com um split sugerindo o total
+              setPagamentos([{ 
+                splitId: crypto.randomUUID(), 
+                forma_pagamento_id: formas[0]?.id || '', 
+                valor: total 
+              }]);
+              setShowFinalize(true); 
+            }} className="h-10 rounded-lg text-primary-foreground text-sm font-semibold flex items-center justify-center gap-1.5 transition-all bg-primary hover:opacity-90"><CreditCard className="h-3.5 w-3.5" /> Finalizar</button>
           </div>
         </div>
       </div>
 
+      {/* MODAL - SELEÇÃO DE LOTE */}
       {lotSelectionItem && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4 shadow-xl animate-in zoom-in-95">
@@ -743,39 +857,136 @@ export default function PDV() {
         </div>
       )}
 
+      {/* MODAL - FINALIZAR VENDA COM MÚLTIPLOS PAGAMENTOS */}
       {showFinalize && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-sm rounded-xl border border-border bg-card p-6 space-y-4 shadow-xl">
-            <h2 className="text-lg font-bold">Finalizar Venda</h2>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                 <label className="text-xs font-medium text-muted-foreground">Forma de Pagamento *</label>
-                <select value={formaPagamentoId} onChange={(e) => setFormPagamentoId(e.target.value)} className="w-full h-10 px-3 rounded-lg border border-input bg-secondary text-sm">
-                  <option value="">Selecione...</option>
-                  {formas.map(f => <option key={f.id} value={f.id}>{f.nome.toUpperCase()}</option>)}
-                </select>
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 space-y-4 shadow-xl animate-in zoom-in-95">
+            <div className="flex justify-between items-center">
+              <h2 className="text-lg font-bold flex items-center gap-2">
+                <CreditCard className="h-5 w-5 text-primary" /> Finalizar Venda
+              </h2>
+              <button onClick={() => setShowFinalize(false)} className="p-1 rounded-lg hover:bg-secondary text-muted-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Resumo do total */}
+            <div className="p-3 rounded-lg bg-primary/5 border border-primary/20 flex justify-between items-center">
+              <span className="text-sm font-bold text-muted-foreground">Total a Pagar</span>
+              <span className="text-xl font-black font-mono text-primary">{fCurrency(total)}</span>
+            </div>
+
+            {/* Lista de splits de pagamento */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-muted-foreground uppercase">Formas de Pagamento</label>
+                <button
+                  type="button"
+                  onClick={addSplit}
+                  className="flex items-center gap-1 text-[10px] font-bold text-primary hover:underline"
+                >
+                  <PlusCircle className="h-3.5 w-3.5" /> Adicionar forma
+                </button>
               </div>
 
-              {formas.find(f => f.id === formaPagamentoId)?.nome.toLowerCase().includes('dinheiro') && (
-                <div className="space-y-2 p-3 bg-secondary rounded-lg border border-primary/20 animate-in zoom-in-95">
-                  <label className="text-xs font-bold text-primary uppercase">Valor Recebido</label>
-                  <input type="number" value={valorRecebido || ''} onChange={(e) => setValorRecebido(Number(e.target.value))} className="w-full h-10 bg-background border border-primary/30 rounded-lg px-3 font-mono font-bold text-lg" autoFocus placeholder="0,00" />
-                  {valorRecebido > total && (<div className="flex justify-between items-center pt-1 font-bold text-green-600"><span className="text-[10px] uppercase">Troco</span><span className="text-sm font-mono">{fCurrency(troco)}</span></div>)}
-                </div>
-               )}
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-1" style={customScrollStyles}>
+                {pagamentos.map((pgt, idx) => {
+                  const formaNome = formas.find(f => f.id === pgt.forma_pagamento_id)?.nome.toLowerCase() || '';
+                  const isDinheiro = formaNome.includes('dinheiro');
 
-              <div className="p-3 rounded-lg bg-primary/5 border border-primary/20">
-                <div className="flex justify-between text-sm font-bold"><span>Total Final</span><span className="font-mono text-primary text-lg">{fCurrency(total)}</span></div>
-               </div>
+                  return (
+                    <div key={pgt.splitId} className="p-3 rounded-lg border border-border bg-secondary/40 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-black text-muted-foreground bg-background px-2 py-0.5 rounded-full border border-border">
+                          #{idx + 1}
+                        </span>
+                        <select
+                          value={pgt.forma_pagamento_id}
+                          onChange={(e) => updateSplit(pgt.splitId, 'forma_pagamento_id', e.target.value)}
+                          className="flex-1 h-9 px-2 rounded-lg border border-input bg-secondary text-sm"
+                        >
+                          <option value="">Selecione...</option>
+                          {formas.map(f => <option key={f.id} value={f.id}>{f.nome.toUpperCase()}</option>)}
+                        </select>
+                        {pagamentos.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => removeSplit(pgt.splitId)}
+                            className="p-1.5 rounded-lg hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-muted-foreground font-bold uppercase ml-1">Valor:</span>
+                        <input
+                          type="number"
+                          value={pgt.valor || ''}
+                          onChange={(e) => updateSplit(pgt.splitId, 'valor', Number(e.target.value))}
+                          placeholder="0,00"
+                          className="flex-1 h-8 bg-background border border-border rounded-lg px-3 font-mono text-sm"
+                        />
+                        {/* Botão de atalho para preencher o restante */}
+                        {pagamentos.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const outrosSplits = pagamentos.filter(p => p.splitId !== pgt.splitId);
+                              const somaOutros = outrosSplits.reduce((s, p) => s + (Number(p.valor) || 0), 0);
+                              updateSplit(pgt.splitId, 'valor', Math.max(0, total - somaOutros));
+                            }}
+                            className="text-[9px] font-bold text-primary border border-primary/30 rounded px-1.5 py-1 hover:bg-primary/10 whitespace-nowrap"
+                          >
+                            Restante
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Troco para dinheiro */}
+                      {isDinheiro && pgt.valor > 0 && troco > 0 && (
+                        <div className="flex justify-between items-center px-1 pt-1 border-t border-border/50">
+                          <span className="text-[10px] font-bold text-muted-foreground uppercase">Troco</span>
+                          <span className="text-sm font-black font-mono text-green-500">{fCurrency(troco)}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Indicador de saldo restante */}
+              <div className={`flex justify-between items-center p-2 rounded-lg text-xs font-bold ${Math.abs(restantePagamento) < 0.01 ? 'bg-green-500/10 text-green-600 border border-green-500/20' : restantePagamento > 0 ? 'bg-yellow-500/10 text-yellow-600 border border-yellow-500/20' : 'bg-blue-500/10 text-blue-600 border border-blue-500/20'}`}>
+                <span>
+                  {Math.abs(restantePagamento) < 0.01 
+                    ? '✓ Pagamento coberto' 
+                    : restantePagamento > 0 
+                      ? `⚠ Falta cobrir: ${fCurrency(restantePagamento)}` 
+                      : `Troco: ${fCurrency(Math.abs(restantePagamento))}`
+                  }
+                </span>
+                <span className="font-mono">{fCurrency(totalPagamentos)} / {fCurrency(total)}</span>
+              </div>
             </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button onClick={() => setShowFinalize(false)} className="h-10 px-4 rounded-lg border text-sm font-medium">Cancelar</button>
-              <button onClick={finalizeSale} disabled={saving} className="h-10 px-4 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20">{saving ? 'Processando...' : 'Confirmar Venda'}</button>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-border">
+              <button onClick={() => setShowFinalize(false)} className="h-10 px-4 rounded-lg border text-sm font-medium hover:bg-secondary">
+                Cancelar
+              </button>
+              <button
+                onClick={finalizeSale}
+                disabled={saving || pagamentos.some(p => !p.forma_pagamento_id) || totalPagamentos < total - 0.01}
+                className="h-10 px-5 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {saving ? 'Processando...' : <><Check className="h-4 w-4" /> Confirmar Venda</>}
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* MODAL - SUCESSO */}
       {showSuccess && (
         <div className="fixed inset-0 z-[80] flex items-center justify-center bg-background/80 backdrop-blur-sm">
           <div className="rounded-xl bg-card border border-primary p-8 text-center shadow-xl animate-in zoom-in-95">
