@@ -52,7 +52,6 @@ export default function Vendas() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   
-  // Estados para o novo sistema de filtro de datas
   const [filtroData, setFiltroData] = useState('hoje');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -72,14 +71,42 @@ export default function Vendas() {
     return new Date(dateString).toLocaleDateString('pt-BR');
   };
 
-  // Função auxiliar para formatar data considerando fuso horário local
   const formatDateToISO = (date: Date) => {
     const d = new Date(date);
     d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
     return d.toISOString().split('T')[0];
   };
 
-  // Effect para calcular as datas automaticamente baseado no filtro selecionado
+  // ── NOVA FUNÇÃO: Gera descrição precisa do período para o relatório ──────────
+  const getPeriodoStr = () => {
+    const labels: Record<string, string> = {
+      hoje: 'Hoje',
+      ontem: 'Ontem', 
+      semana: 'Esta Semana',
+      mes: 'Este Mês',
+      todos: 'Todo o Período',
+    };
+
+    if (filtroData !== 'personalizado' && filtroData !== 'todos') {
+      const label = labels[filtroData] || filtroData;
+      if (startDate && endDate) {
+        const inicio = formatDate(startDate + 'T00:00:00');
+        const fim = formatDate(endDate + 'T00:00:00');
+        return inicio === fim
+          ? `${label} (${inicio})`
+          : `${label} (${inicio} até ${fim})`;
+      }
+      return label;
+    }
+
+    if (filtroData === 'todos') return 'Todo o Período';
+
+    const inicio = startDate ? formatDate(startDate + 'T00:00:00') : 'início';
+    const fim = endDate ? formatDate(endDate + 'T00:00:00') : 'hoje';
+    return `Personalizado: ${inicio} até ${fim}`;
+  };
+  // ─────────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (filtroData === 'personalizado') return;
 
@@ -99,7 +126,6 @@ export default function Vendas() {
         fim = formatDateToISO(ontem);
         break;
       case 'semana':
-        // Semana iniciando na segunda-feira (padrão brasileiro)
         const diaSemana = hoje.getDay();
         const diasParaSegunda = diaSemana === 0 ? 6 : diaSemana - 1;
         const inicioSemana = new Date(hoje);
@@ -114,7 +140,6 @@ export default function Vendas() {
         fim = formatDateToISO(fimMes);
         break;
       default:
-        // 'todos' - sem filtro de data
         inicio = '';
         fim = '';
         break;
@@ -497,20 +522,41 @@ export default function Vendas() {
 
   const searchLower = search.toLowerCase();
 
-  const filteredVendas = vendas.filter((v) =>
-    v.cliente_nome?.toLowerCase().includes(searchLower) ||
-    (v.formas_resumo || v.forma_nome || '').toLowerCase().includes(searchLower) ||
-    v.vendedor_nome?.toLowerCase().includes(searchLower) ||
-    v.id.toLowerCase().includes(searchLower)
-  );
+  // ── FILTRO CRUZADO APRIMORADO: Busca bidirecional entre vendas e itens ──────
+  const filteredVendas = vendas.filter((v) => {
+    const textMatch = v.cliente_nome?.toLowerCase().includes(searchLower) ||
+      (v.formas_resumo || v.forma_nome || '').toLowerCase().includes(searchLower) ||
+      v.vendedor_nome?.toLowerCase().includes(searchLower) ||
+      v.id.toLowerCase().includes(searchLower);
 
-  const filteredItens = todosItens.filter((i) => 
-    i.produto_nome?.toLowerCase().includes(searchLower) ||
-    i.vendedor_nome?.toLowerCase().includes(searchLower) ||
-    i.venda_id.toLowerCase().includes(searchLower) ||
-    i.codigo_produto?.toLowerCase().includes(searchLower) ||
-    i.lote_observacao?.toLowerCase().includes(searchLower)
-  );
+    if (textMatch) return true;
+
+    // Se não achou na venda, procura nos itens dessa venda
+    const itensVenda = todosItens.filter(i => i.venda_id === v.id);
+    return itensVenda.some(i => 
+      i.produto_nome?.toLowerCase().includes(searchLower) ||
+      i.codigo_produto?.toLowerCase().includes(searchLower) ||
+      i.lote_observacao?.toLowerCase().includes(searchLower)
+    );
+  });
+
+  const filteredItens = todosItens.filter((i) => {
+    const textMatch = i.produto_nome?.toLowerCase().includes(searchLower) ||
+      i.vendedor_nome?.toLowerCase().includes(searchLower) ||
+      i.venda_id.toLowerCase().includes(searchLower) ||
+      i.codigo_produto?.toLowerCase().includes(searchLower) ||
+      i.lote_observacao?.toLowerCase().includes(searchLower);
+
+    if (textMatch) return true;
+
+    // Se não achou no item, procura na venda relacionada
+    const vendaPai = vendas.find(v => v.id === i.venda_id);
+    return vendaPai && (
+      vendaPai.cliente_nome?.toLowerCase().includes(searchLower) ||
+      (vendaPai.formas_resumo || vendaPai.forma_nome || '').toLowerCase().includes(searchLower)
+    );
+  });
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const totalGeral = activeTab === 'itens' 
     ? filteredItens.reduce((s, i) => s + (Number(i.total) || 0), 0)
@@ -522,6 +568,7 @@ export default function Vendas() {
   const adminCustosAdd = filteredVendas.reduce((s, v) => s + (v.custo_no_lucro ? 0 : (Number(v.custo_adicional) || 0)), 0);
   const adminMargemOperacional = adminTotalReceita > 0 ? (adminTotalLucro / adminTotalReceita) * 100 : 0;
 
+  // ── FUNÇÃO DE IMPRESSÃO APRIMORADA: Respeita todos os filtros com metadados ──
   function imprimirRelatorioGeral() {
     const win = window.open('', '_blank');
     if (!win) return;
@@ -539,11 +586,17 @@ export default function Vendas() {
       </div>
     ` : '';
 
-    const periodoStr = `${startDate ? formatDate(startDate + 'T00:00:00') : 'Todo o período'} até ${endDate ? formatDate(endDate + 'T00:00:00') : 'Hoje'}`;
-    const filtroStr = search ? `<p><b>Filtro aplicado:</b> "${search}"</p>` : '';
+    const periodoStr = getPeriodoStr();
+    const filtroStr = search.trim() 
+      ? `<p style="margin: 4px 0;"><b>Filtro de busca:</b> "${search.trim()}"</p>` 
+      : '';
+
+    const metaDadosStr = `
+      <p style="margin: 4px 0;"><b>Período:</b> ${periodoStr}</p>
+      ${filtroStr}
+    `;
 
     if (activeTab === 'vendas') {
-      // Relatório agrupado por forma de pagamento
       const vendasPorPagamento: Record<string, typeof filteredVendas> = {};
       filteredVendas.forEach(v => {
         const forma = v.formas_resumo || v.forma_nome || 'NÃO INFORMADO';
@@ -587,17 +640,22 @@ export default function Vendas() {
           <body>
             ${cabecalhoEmpresa}
             <h2>Relatório de Vendas por Forma de Pagamento</h2>
-            <p><b>Período:</b> ${periodoStr}</p>
-            ${filtroStr}
+            ${metaDadosStr}
+            <p style="margin: 4px 0;"><b>Total de vendas exibidas:</b> ${filteredVendas.length}</p>
             <hr/>
-            ${conteudoTabela}
-            <br/>
-            <h3 style="text-align: right; margin-top: 20px; border-top: 2px solid #333; padding-top: 10px;">Total Geral: ${formatCurrency(totalGeral)}</h3>
+            ${filteredVendas.length === 0
+              ? '<p style="text-align:center; color:#999; margin-top: 40px;">Nenhuma venda encontrada para os filtros aplicados.</p>'
+              : conteudoTabela
+            }
+            ${filteredVendas.length > 0
+              ? `<br/><h3 style="text-align: right; margin-top: 20px; border-top: 2px solid #333; padding-top: 10px;">Total Geral: ${formatCurrency(totalGeral)}</h3>`
+              : ''
+            }
           </body>
         </html>
       `);
+
     } else if (activeTab === 'itens') {
-      // Relatório de produtos agrupados (sem duplicatas)
       const itensAgrupados: Record<string, typeof filteredItens[0]> = {};
       
       filteredItens.forEach(i => {
@@ -621,38 +679,43 @@ export default function Vendas() {
           <body>
             ${cabecalhoEmpresa}
             <h2>Relatório de Produtos Vendidos</h2>
-            <p><b>Período:</b> ${periodoStr}</p>
-            ${filtroStr}
+            ${metaDadosStr}
+            <p style="margin: 4px 0;"><b>Total de itens exibidos:</b> ${filteredItens.length} (${listaAgrupada.length} produtos distintos)</p>
             <hr/>
-            <table style="width:100%; text-align:left; border-collapse: collapse; margin-top: 15px; font-size: 12px;">
-              <tr style="border-bottom: 2px solid #333;">
-                <th style="padding: 8px 0;">Data</th>
-                <th style="padding: 8px 0;">Produto</th>
-                <th style="padding: 8px 0;">Código</th>
-                <th style="padding: 8px 0;">Lote</th>
-                <th style="padding: 8px 0;">Vendedor</th>
-                <th style="padding: 8px 0; text-align:center;">Qtd</th>
-                <th style="padding: 8px 0; text-align:right;">Total</th>
-              </tr>
-              ${listaAgrupada.map((i: any) => `
-                <tr style="border-bottom: 1px solid #ccc;">
-                  <td style="padding: 8px 0;">${formatDate(i.criado_em)}</td>
-                  <td style="padding: 8px 0;">${i.produto_nome}</td>
-                  <td style="padding: 8px 0; font-family: monospace;">${i.codigo_produto || '-'}</td>
-                  <td style="padding: 8px 0; color: #555;">${i.lote_observacao || '-'}</td>
-                  <td style="padding: 8px 0;">${i.vendedor_nome || '-'}</td>
-                  <td style="padding: 8px 0; text-align:center;">${i.quantidade}</td>
-                  <td style="padding: 8px 0; text-align:right;">${formatCurrency(i.total)}</td>
-                </tr>
-              `).join('')}
-            </table>
-            <br/>
-            <h3 style="text-align: right;">Total do Relatório: ${formatCurrency(totalGeral)}</h3>
+            ${listaAgrupada.length === 0
+              ? '<p style="text-align:center; color:#999; margin-top: 40px;">Nenhum item encontrado para os filtros aplicados.</p>'
+              : `
+                <table style="width:100%; text-align:left; border-collapse: collapse; margin-top: 15px; font-size: 12px;">
+                  <tr style="border-bottom: 2px solid #333;">
+                    <th style="padding: 8px 0;">Data</th>
+                    <th style="padding: 8px 0;">Produto</th>
+                    <th style="padding: 8px 0;">Código</th>
+                    <th style="padding: 8px 0;">Lote</th>
+                    <th style="padding: 8px 0;">Vendedor</th>
+                    <th style="padding: 8px 0; text-align:center;">Qtd</th>
+                    <th style="padding: 8px 0; text-align:right;">Total</th>
+                  </tr>
+                  ${listaAgrupada.map((i: any) => `
+                    <tr style="border-bottom: 1px solid #ccc;">
+                      <td style="padding: 8px 0;">${formatDate(i.criado_em)}</td>
+                      <td style="padding: 8px 0;">${i.produto_nome}</td>
+                      <td style="padding: 8px 0; font-family: monospace;">${i.codigo_produto || '-'}</td>
+                      <td style="padding: 8px 0; color: #555;">${i.lote_observacao || '-'}</td>
+                      <td style="padding: 8px 0;">${i.vendedor_nome || '-'}</td>
+                      <td style="padding: 8px 0; text-align:center;">${i.quantidade}</td>
+                      <td style="padding: 8px 0; text-align:right;">${formatCurrency(i.total)}</td>
+                    </tr>
+                  `).join('')}
+                </table>
+                <br/>
+                <h3 style="text-align: right;">Total do Relatório: ${formatCurrency(totalGeral)}</h3>
+              `
+            }
           </body>
         </html>
       `);
+
     } else if (activeTab === 'admin') {
-      // Relatório administrativo detalhado
       let totalGeralLucroLiq = 0;
       let totalGeralDescontos = 0;
       let totalGeralCustosAdd = 0;
@@ -720,35 +783,40 @@ export default function Vendas() {
           <body>
             ${cabecalhoEmpresa}
             <h2>Relatório Administrativo Geral (Interno)</h2>
-            <p><b>Período:</b> ${periodoStr}</p>
-            ${filtroStr}
+            ${metaDadosStr}
+            <p style="margin: 4px 0;"><b>Total de vendas exibidas:</b> ${filteredVendas.length}</p>
             <hr/>
-            <table>
-              <thead>
-                <tr>
-                  <th style="text-align:left;">Data</th>
-                  <th style="text-align:left;">Vendedor</th>
-                  <th style="text-align:left;">Produto / Código / Lote</th>
-                  <th>Custo Un.</th>
-                  <th>Custo Qtd.</th>
-                  <th>Lucro Un.</th>
-                  <th>Lucro Qtd.</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${conteudoTabela}
-              </tbody>
-            </table>
-            
-            <div style="margin-top: 30px; border-top: 3px solid #333; padding-top: 15px;">
-              <table style="width: 100%; max-width: 500px; margin-left: auto; font-size: 14px;">
-                <tr><td><b>Total Descontos:</b></td><td style="text-align:right; color: #dc2626;">- ${formatCurrency(totalGeralDescontos)}</td></tr>
-                <tr><td><b>Custos Add (Não Contab. Lucro):</b></td><td style="text-align:right; color: #dc2626;">- ${formatCurrency(totalGeralCustosAdd)}</td></tr>
-                <tr><td><b>Custos Add (Contab. Lucro):</b></td><td style="text-align:right; color: #059669;">+ ${formatCurrency(totalGeralCustosAddLucro)}</td></tr>
-                <tr style="border-top: 2px solid #333;"><td style="color: #059669;"><b>LUCRO LÍQUIDO TOTAL:</b></td><td style="text-align:right; color: #059669; font-size: 18px; font-weight: bold;">${formatCurrency(totalGeralLucroLiq)}</td></tr>
-                <tr><td><b>Total Receita:</b></td><td style="text-align:right; font-size: 18px; font-weight: bold;">${formatCurrency(totalGeral)}</td></tr>
-              </table>
-            </div>
+            ${filteredVendas.length === 0
+              ? '<p style="text-align:center; color:#999; margin-top: 40px;">Nenhuma venda encontrada para os filtros aplicados.</p>'
+              : `
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="text-align:left;">Data</th>
+                      <th style="text-align:left;">Vendedor</th>
+                      <th style="text-align:left;">Produto / Código / Lote</th>
+                      <th>Custo Un.</th>
+                      <th>Custo Qtd.</th>
+                      <th>Lucro Un.</th>
+                      <th>Lucro Qtd.</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${conteudoTabela}
+                  </tbody>
+                </table>
+                
+                <div style="margin-top: 30px; border-top: 3px solid #333; padding-top: 15px;">
+                  <table style="width: 100%; max-width: 500px; margin-left: auto; font-size: 14px;">
+                    <tr><td><b>Total Descontos:</b></td><td style="text-align:right; color: #dc2626;">- ${formatCurrency(totalGeralDescontos)}</td></tr>
+                    <tr><td><b>Custos Add (Não Contab. Lucro):</b></td><td style="text-align:right; color: #dc2626;">- ${formatCurrency(totalGeralCustosAdd)}</td></tr>
+                    <tr><td><b>Custos Add (Contab. Lucro):</b></td><td style="text-align:right; color: #059669;">+ ${formatCurrency(totalGeralCustosAddLucro)}</td></tr>
+                    <tr style="border-top: 2px solid #333;"><td style="color: #059669;"><b>LUCRO LÍQUIDO TOTAL:</b></td><td style="text-align:right; color: #059669; font-size: 18px; font-weight: bold;">${formatCurrency(totalGeralLucroLiq)}</td></tr>
+                    <tr><td><b>Total Receita:</b></td><td style="text-align:right; font-size: 18px; font-weight: bold;">${formatCurrency(totalGeral)}</td></tr>
+                  </table>
+                </div>
+              `
+            }
           </body>
         </html>
       `);
@@ -757,6 +825,7 @@ export default function Vendas() {
     win.document.close();
     win.print();
   }
+  // ─────────────────────────────────────────────────────────────────────────────
 
   const isAdminTab = activeTab === 'admin';
 
@@ -843,7 +912,6 @@ export default function Vendas() {
           />
         </div>
 
-        {/* NOVO SELETOR DE PERÍODO */}
         <select
           value={filtroData}
           onChange={(e) => setFiltroData(e.target.value)}
@@ -857,7 +925,6 @@ export default function Vendas() {
           <option value="personalizado">Personalizado</option>
         </select>
 
-        {/* CAMPOS DE DATA PERSONALIZADOS - aparecem apenas quando "personalizado" é selecionado */}
         {filtroData === 'personalizado' && (
           <>
             <input 
