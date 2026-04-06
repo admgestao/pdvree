@@ -113,7 +113,6 @@ export default function PDV() {
 
   // Estados para múltiplos pagamentos
   const [pagamentos, setPagamentos] = useState<PagamentoSplit[]>([]);
-
   const darkScrollbarClass = "scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent overflow-y-auto";
   const customScrollStyles = {
     scrollbarWidth: 'thin',
@@ -121,7 +120,7 @@ export default function PDV() {
   } as React.CSSProperties;
   
   const fCurrency = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-  
+
   useEffect(() => {
     loadFormas();
     loadClientes();
@@ -172,7 +171,8 @@ export default function PDV() {
       let lotesAdicionais: any[] = [];
       if (pIds.length > 0) {
         const { data: lExtras } = await supabase.from('produto_lotes')
-          .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao')
+          // ✅ CORREÇÃO: Adicionado preco_venda no select
+          .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao, preco_venda')
           .in('produto_id', pIds);
         lotesAdicionais = lExtras || [];
       }
@@ -186,15 +186,19 @@ export default function PDV() {
           lotes: []
         });
       });
+
       lotesAdicionais.forEach(lote => {
         const prod = produtosMap.get(lote.produto_id);
         if (prod && prod.lotes) {
            prod.lotes.push({ 
              id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-             quantidade_atual: lote.quantidade_atual, observacao: lote.observacao
+             quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
+             // ✅ CORREÇÃO: Resgata o preço do lote
+             preco_venda_lote: Number(lote.preco_venda) || Number(prod.preco_venda)
            });
         }
       });
+
       if (lData) {
         lData.forEach(lote => {
           if (lote.produtos) {
@@ -211,12 +215,16 @@ export default function PDV() {
             if (prod.lotes && !prod.lotes.find(l => l.id === lote.id)) {
               prod.lotes.push({
                 id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-                quantidade_atual: lote.quantidade_atual, observacao: lote.observacao
+                quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
+                // ✅ CORREÇÃO: Resgata o preço do lote
+                preco_venda_lote: Number(lote.preco_venda) || Number(lote.produtos.preco_venda)
               });
             }
             if (query === lote.codigo_barras) {
               prod.lote_id = lote.id;
               prod.lote_codigo = lote.codigo_barras;
+              // ✅ Garante que se achou diretamente pelo lote, o preço principal seja atualizado
+              prod.preco_venda = Number(lote.preco_venda) || Number(lote.produtos.preco_venda);
             }
           }
         });
@@ -232,8 +240,7 @@ export default function PDV() {
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
 
-  // ✅ CORREÇÃO PRINCIPAL: Limpa imediatamente o dropdown e o campo de busca
-  // para evitar cliques acidentais que causam duplicação
+  // ✅ CORREÇÃO PRINCIPAL: Busca estruturada para lidar com leitura por bip
   const handleSearchExact = async (e: React.FormEvent) => {
     e.preventDefault();
     const query = search.trim();
@@ -244,46 +251,8 @@ export default function PDV() {
     setProdutos([]);
     setSearch('');
 
-    const { data: lotesData } = await supabase
-      .from('produto_lotes')
-      .select('*, produtos(*)')
-      .eq('codigo_barras', query);
-
-    if (lotesData && lotesData.length > 0) {
-      if (lotesData.length === 1) {
-        const lote = lotesData[0];
-        const p = lote.produtos;
-        if (p) {
-          if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
-          executeAddToCart({
-            id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
-            preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
-            estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-            lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
-          });
-        } else {
-          toast.error('Produto base não encontrado para este lote.');
-        }
-      } else {
-        const baseProd = lotesData[0].produtos;
-        if (baseProd) {
-          setLotSelectionItem({
-            id: baseProd.id, nome: baseProd.nome, codigo: baseProd.codigo || '', marca: baseProd.marca || '',
-            preco_venda: Number(baseProd.preco_venda) || 0, preco_custo: Number(baseProd.preco_custo) || 0,
-            estoque_atual: Number(baseProd.estoque_atual) || 0, categoria: baseProd.categoria || '',
-            lotes: lotesData.map(l => ({
-              id: l.id,
-              codigo: l.codigo_barras,
-              data_validade: l.data_validade,
-              quantidade_atual: l.quantidade_atual,
-              observacao: l.observacao,
-              preco_venda_lote: Number(l.produtos?.preco_venda) || 0,
-              nome_produto_lote: l.produtos?.nome || ''
-            }))
-          });
-        }
-      }
-    } else {
+    try {
+      // 1. Tenta buscar primeiro pelo código exato do PRODUTO
       const { data: prodsData } = await supabase
         .from('produtos')
         .select('*')
@@ -294,12 +263,15 @@ export default function PDV() {
         const p = prodsData[0];
         if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
+        // Busca TODOS os lotes ativos com estoque para este produto
         const { data: lotesDoProduto } = await supabase
           .from('produto_lotes')
           .select('*')
-          .eq('produto_id', p.id);
+          .eq('produto_id', p.id)
+          .gt('quantidade_atual', 0);
 
         if (lotesDoProduto && lotesDoProduto.length > 1) {
+          // Abre modal de lotes
           setLotSelectionItem({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
@@ -310,41 +282,100 @@ export default function PDV() {
               data_validade: l.data_validade,
               quantidade_atual: l.quantidade_atual,
               observacao: l.observacao,
-              preco_venda_lote: Number(p.preco_venda) || 0,
+              // ✅ AGORA PUXA O PREÇO DO LOTE E NÃO MAIS DO PRODUTO (p.preco_venda)
+              preco_venda_lote: Number(l.preco_venda) || Number(p.preco_venda) || 0,
               nome_produto_lote: p.nome
             }))
           });
+          return;
         } else if (lotesDoProduto && lotesDoProduto.length === 1) {
+          // Único lote, adiciona direto
           const lote = lotesDoProduto[0];
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
-            preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
+            preco_venda: Number(lote.preco_venda) || Number(p.preco_venda) || 0,
+            preco_custo: Number(p.preco_custo) || 0,
             estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
             lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
           });
+          return;
         } else {
+          // Sem lotes mapeados, adiciona produto puro
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
             estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
             lotes: []
           });
+          return;
+        }
+      }
+
+      // 2. Se não achou produto direto, tenta buscar por código de barras de LOTE específico
+      const { data: lotesData } = await supabase
+        .from('produto_lotes')
+        .select('*, produtos(*)')
+        .eq('codigo_barras', query)
+        .gt('quantidade_atual', 0);
+
+      if (lotesData && lotesData.length > 0) {
+        if (lotesData.length === 1) {
+          const lote = lotesData[0];
+          const p = lote.produtos;
+          if (p) {
+            if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
+            executeAddToCart({
+              id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
+              preco_venda: Number(lote.preco_venda) || Number(p.preco_venda) || 0,
+              preco_custo: Number(p.preco_custo) || 0,
+              estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
+              lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
+            });
+          } else {
+            toast.error('Produto base não encontrado para este lote.');
+          }
+        } else {
+          // Raro: múltiplos lotes diferentes com o mesmo código de barras
+          const baseProd = lotesData[0].produtos;
+          if (baseProd) {
+            setLotSelectionItem({
+              id: baseProd.id, nome: baseProd.nome, codigo: baseProd.codigo || '', marca: baseProd.marca || '',
+              preco_venda: Number(baseProd.preco_venda) || 0, preco_custo: Number(baseProd.preco_custo) || 0,
+              estoque_atual: Number(baseProd.estoque_atual) || 0, categoria: baseProd.categoria || '',
+              lotes: lotesData.map(l => ({
+                id: l.id,
+                codigo: l.codigo_barras,
+                data_validade: l.data_validade,
+                quantidade_atual: l.quantidade_atual,
+                observacao: l.observacao,
+                preco_venda_lote: Number(l.preco_venda) || Number(baseProd.preco_venda) || 0,
+                nome_produto_lote: baseProd.nome || ''
+              }))
+            });
+          }
         }
       } else {
         toast.error('Produto ou Lote não encontrado');
       }
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro na busca');
     }
   };
 
   const addToCart = (product: Produto) => {
     if (product.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
-    if (!product.lote_id && product.lotes && product.lotes.length > 1) {
+    // Filtra apenas lotes que possuem saldo para evitar mostrar no modal lotes vazios
+    const activeLotes = product.lotes ? product.lotes.filter(l => (l.quantidade_atual || 0) > 0) : [];
+
+    if (!product.lote_id && activeLotes.length > 1) {
       setLotSelectionItem({
         ...product,
-        lotes: product.lotes.map(l => ({
+        lotes: activeLotes.map(l => ({
           ...l,
-          preco_venda_lote: product.preco_venda,
+          // ✅ GARANTE QUE O PREÇO SEJA O DO LOTE E NÃO O PREÇO BASE DO PRODUTO
+          preco_venda_lote: Number(l.preco_venda_lote) || product.preco_venda,
           nome_produto_lote: product.nome
         }))
       });
@@ -353,34 +384,28 @@ export default function PDV() {
     }
 
     const finalProduct = { ...product };
-    if (!finalProduct.lote_id && finalProduct.lotes && finalProduct.lotes.length === 1) {
-      finalProduct.lote_id = finalProduct.lotes[0].id;
-      finalProduct.lote_codigo = finalProduct.lotes[0].codigo;
+    if (!finalProduct.lote_id && activeLotes.length === 1) {
+      finalProduct.lote_id = activeLotes[0].id;
+      finalProduct.lote_codigo = activeLotes[0].codigo;
+      // ✅ ATUALIZA O PREÇO DE VENDA PARA O PREÇO DO LOTE ÚNICO ENCONTRADO
+      finalProduct.preco_venda = Number(activeLotes[0].preco_venda_lote) || finalProduct.preco_venda;
     }
 
     executeAddToCart(finalProduct);
   };
 
-  // ✅ MELHORIA ADICIONAL: Verificação robusta de duplicatas considerando
-  // diferentes cenários de lotes e produtos
   const executeAddToCart = (product: Produto) => {
     setCart((prev) => {
-      // Normaliza lote_id para comparação consistente
       const normalizedLoteId = product.lote_id ?? null;
 
-      // Busca por item existente usando múltiplos critérios
       let existing = prev.find((i) =>
         i.id === product.id &&
         (
-          // Mesmo lote (normalizando null/undefined)
           (i.lote_id ?? null) === normalizedLoteId ||
-          // Mesmo código de lote (se disponível)
           (!!product.lote_codigo && i.lote_codigo === product.lote_codigo)
         )
       );
 
-      // Fallback: se não encontrou mas há apenas um item do mesmo produto,
-      // considera como o mesmo registro para evitar duplicação
       if (!existing) {
         const sameProdItems = prev.filter((i) => i.id === product.id);
         if (sameProdItems.length === 1) {
@@ -390,7 +415,7 @@ export default function PDV() {
 
       if (existing) {
         if (existing.quantity >= product.estoque_atual) { 
-          toast.error('Limite atingido'); 
+          toast.error('Limite atingido');
           return prev; 
         }
         return prev.map((i) =>
@@ -400,7 +425,6 @@ export default function PDV() {
         );
       }
 
-      // Adiciona novo item se não encontrou duplicata
       return [
         ...prev,
         {
@@ -409,7 +433,7 @@ export default function PDV() {
           nome: product.nome,
           codigo: product.codigo,
           marca: product.marca,
-          price: product.preco_venda,
+          price: product.preco_venda, // Aqui o preço já chega correto se for lote
           preco_custo: product.preco_custo,
           quantity: 1,
           stock: product.estoque_atual,
@@ -421,7 +445,6 @@ export default function PDV() {
       ];
     });
     
-    // Limpa o estado de busca após adicionar
     setSearch('');
     setProdutos([]);
     setShowResults(false);
@@ -431,7 +454,8 @@ export default function PDV() {
     executeAddToCart({ 
       ...product, 
       nome: lote.nome_produto_lote || product.nome,
-      preco_venda: lote.preco_venda_lote || product.preco_venda,
+      // ✅ GARANTIA de que está usando o valor mapeado na abertura do modal
+      preco_venda: Number(lote.preco_venda_lote) || product.preco_venda,
       lote_id: lote.id, 
       lote_codigo: lote.codigo 
     });
@@ -460,7 +484,6 @@ export default function PDV() {
     const matches = promocoesAtivas.filter(p => p.produto_id === item.id && (!p.lote_id || p.lote_id === item.lote_id));
     const validQty = matches.filter(p => item.quantity >= (p.quantidade_minima || 1) && (!p.quantidade_maxima || item.quantity <= p.quantidade_maxima));
     const validPgto = validQty.filter(p => p.condicao_pagamento === 'todas' || p.condicao_pagamento === currentFormaPgto);
-    
     if (validPgto.length > 0) {
       return validPgto.reduce((prev, curr) => prev.preco_promocional < curr.preco_promocional ? prev : curr);
     }
@@ -540,9 +563,9 @@ export default function PDV() {
     if (c) { 
       setClienteObj(c); 
       setClienteManual(''); 
-      setUsarCredito(false); 
+      setUsarCredito(false);
     } else { 
-      setClienteObj(null); 
+      setClienteObj(null);
     }
   }
 
@@ -554,15 +577,15 @@ export default function PDV() {
   async function finalizeSale() {
     if (cart.length === 0) return;
     if (pagamentos.length === 0 || pagamentos.some(p => !p.forma_pagamento_id)) {
-      toast.error('Preencha todas as formas de pagamento'); 
+      toast.error('Preencha todas as formas de pagamento');
       return;
     }
     if (Math.abs(totalPagamentos - total) > 0.01 && totalPagamentos < total) {
-      toast.error(`Falta ${fCurrency(restantePagamento)} para cobrir o total`); 
+      toast.error(`Falta ${fCurrency(restantePagamento)} para cobrir o total`);
       return;
     }
     if (!vendedorId) { 
-      toast.error('Selecione o Vendedor(a) antes de finalizar!'); 
+      toast.error('Selecione o Vendedor(a) antes de finalizar!');
       return; 
     }
 
@@ -570,7 +593,6 @@ export default function PDV() {
     try {
       const selectedVendedor = vendedores.find(v => v.id === vendedorId);
       const formaPrincipalId = pagamentos.length > 0 ? pagamentos[0].forma_pagamento_id : null;
-
       const { data: venda, error: vendaErr } = await supabase.from('vendas').insert({
         cliente_id: clienteObj?.id || null,
         cliente_nome_manual: clienteObj ? null : clienteManual,
@@ -589,7 +611,6 @@ export default function PDV() {
         troco,
         observacao,
       }).select('id').single();
-      
       if (vendaErr) throw vendaErr;
 
       // Salvar pagamentos detalhados
@@ -614,7 +635,7 @@ export default function PDV() {
           total: getItemTotal(item)
         };
       });
-      
+
       const { error: itensErr } = await supabase.from('vendas_itens').insert(itensParaSalvar);
       if (itensErr) throw itensErr;
 
@@ -622,7 +643,6 @@ export default function PDV() {
         await supabase.from('produtos').update({ 
           estoque_atual: item.stock - item.quantity 
         }).eq('id', item.id);
-        
         if (item.lote_id) {
           const { data: lote } = await supabase.from('produto_lotes')
             .select('quantidade_atual, quantidade')
@@ -666,7 +686,7 @@ export default function PDV() {
       setShowFinalize(false);
       setTimeout(() => { window.location.reload(); }, 2000);
     } catch (err: any) { 
-      toast.error('Erro ao finalizar: ' + err.message); 
+      toast.error('Erro ao finalizar: ' + err.message);
       setSaving(false);
     }
   }
@@ -702,7 +722,6 @@ export default function PDV() {
               className="w-full h-10 pl-10 pr-4 rounded-lg border border-input bg-secondary text-sm focus:outline-none" 
             />
             
-            {/* ✅ CORREÇÃO ADICIONAL: Só renderiza o dropdown se houver produtos */}
             {showResults && produtos.length > 0 && (
               <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-border bg-card shadow-xl z-50 max-h-60 overflow-auto scrollbar-thin scrollbar-thumb-zinc-800">
                 {produtos.map((p, idx) => (
@@ -854,7 +873,7 @@ export default function PDV() {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => { 
-              setCart([]); 
+              setCart([]);
               setCustoAdicional(0); 
               setDescCusto(''); 
               setUsarCredito(false); 
@@ -862,7 +881,7 @@ export default function PDV() {
               setPagamentos([]);
             }} className="h-10 rounded-lg border border-border text-sm font-medium hover:bg-secondary flex items-center justify-center gap-1.5"><X className="h-3.5 w-3.5" /> Limpar</button>
             <button disabled={cart.length === 0} onClick={() => { 
-              if(!vendedorId) return toast.error("Selecione o Vendedor(a)!"); 
+              if(!vendedorId) return toast.error("Selecione o Vendedor(a)!");
               setPagamentos([{ 
                 splitId: crypto.randomUUID(), 
                 forma_pagamento_id: formas[0]?.id || '', 
@@ -903,7 +922,7 @@ export default function PDV() {
                   </div>
                   {lote.observacao && (<div className="mt-1 p-2 bg-background/50 rounded border text-xs italic text-muted-foreground flex items-start gap-1.5"><Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" /><span>{lote.observacao}</span></div>)}
                 </button>
-              ))}
+               ))}
             </div>
             <div className="flex justify-end pt-2 border-t border-border"><button onClick={() => setLotSelectionItem(null)} className="h-9 px-4 rounded-lg border text-sm font-medium hover:bg-secondary">Cancelar</button></div>
           </div>
@@ -1023,7 +1042,7 @@ export default function PDV() {
                 Cancelar
               </button>
               <button
-                onClick={finalizeSale}
+                 onClick={finalizeSale}
                 disabled={saving || pagamentos.some(p => !p.forma_pagamento_id) || totalPagamentos < total - 0.01}
                 className="h-10 px-5 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
