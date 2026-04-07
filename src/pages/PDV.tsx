@@ -567,8 +567,7 @@ export default function PDV() {
     setVendedorId(id);
     localStorage.setItem('@pdv:vendedor_id', id);
   };
-
-  async function finalizeSale() {
+async function finalizeSale() {
     if (cart.length === 0) return;
     if (pagamentos.length === 0 || pagamentos.some(p => !p.forma_pagamento_id)) {
       toast.error('Preencha todas as formas de pagamento');
@@ -660,29 +659,30 @@ export default function PDV() {
         }).eq('id', clienteObj.id);
       }
 
-      // ✅ CORREÇÃO: Registro automático no caixa para pagamentos em dinheiro
-      // Calcula o troco uma única vez e distribui corretamente
-      let trocoRestante = troco;
-      for (const pgt of pagamentos) {
+      // ✅ CORREÇÃO DEFINITIVA: Registro no caixa para pagamentos em dinheiro
+      const splitsDinheiro = pagamentos.filter(pgt => {
         const forma = formas.find(f => f.id === pgt.forma_pagamento_id);
-        const nomeLower = forma?.nome?.toLowerCase() || '';
-        if (nomeLower.includes('dinheiro')) {
-          const valorPago = Number(pgt.valor) || 0;
-          // Subtrai o troco apenas do primeiro split de dinheiro que cobrir
-          const trocoDescontado = Math.min(trocoRestante, valorPago);
-          const valorParaCaixa = valorPago - trocoDescontado;
-          trocoRestante = trocoRestante - trocoDescontado;
+        return forma?.nome?.toLowerCase().includes('dinheiro');
+      });
 
-          if (valorParaCaixa > 0) {
-            const { error: caixaErr } = await supabase.from('caixa_movimentos').insert({
-              usuario_id: nomeVendedor,
-              tipo: 'entrada',
-              valor: valorParaCaixa,
-              descricao: `Venda #${venda.id.substring(0, 8)} - ${forma?.nome || 'Dinheiro'}`,
-            });
-            if (caixaErr) {
-              console.error('Erro ao registrar entrada no caixa:', caixaErr);
-            }
+      if (splitsDinheiro.length > 0) {
+        const totalPagoDinheiro = splitsDinheiro.reduce((s, p) => s + (Number(p.valor) || 0), 0);
+        // Valor real = total pago em dinheiro - troco
+        const valorRealCaixa = totalPagoDinheiro - troco;
+
+        if (valorRealCaixa > 0) {
+          const vendaIdCurto = venda.id.substring(0, 8);
+          const { error: caixaErr } = await supabase.from('caixa_movimentos').insert({
+            usuario_id: nomeVendedor,
+            tipo: 'entrada',
+            valor: valorRealCaixa,
+            descricao: `Venda #${vendaIdCurto} - Dinheiro`,
+            criado_em: new Date().toISOString(),
+          });
+
+          if (caixaErr) {
+            console.error('ERRO AO REGISTRAR NO CAIXA:', caixaErr);
+            toast.error('Venda OK, mas falhou ao registrar entrada no caixa: ' + caixaErr.message);
           }
         }
       }
@@ -695,6 +695,7 @@ export default function PDV() {
       setSaving(false);
     }
   }
+
 
   return (
     <div className="h-[calc(100vh-3rem)] flex flex-col lg:flex-row animate-fade-in bg-background text-foreground">
