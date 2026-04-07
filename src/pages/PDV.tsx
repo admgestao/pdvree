@@ -171,7 +171,6 @@ export default function PDV() {
       let lotesAdicionais: any[] = [];
       if (pIds.length > 0) {
         const { data: lExtras } = await supabase.from('produto_lotes')
-          // ✅ CORREÇÃO: Adicionado preco_venda no select
           .select('id, codigo_barras, produto_id, data_validade, quantidade_atual, observacao, preco_venda')
           .in('produto_id', pIds);
         lotesAdicionais = lExtras || [];
@@ -193,7 +192,6 @@ export default function PDV() {
            prod.lotes.push({ 
              id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
              quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-             // ✅ CORREÇÃO: Resgata o preço do lote
              preco_venda_lote: Number(lote.preco_venda) || Number(prod.preco_venda)
            });
         }
@@ -216,14 +214,12 @@ export default function PDV() {
               prod.lotes.push({
                 id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
                 quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-                // ✅ CORREÇÃO: Resgata o preço do lote
                 preco_venda_lote: Number(lote.preco_venda) || Number(lote.produtos.preco_venda)
               });
             }
             if (query === lote.codigo_barras) {
               prod.lote_id = lote.id;
               prod.lote_codigo = lote.codigo_barras;
-              // ✅ Garante que se achou diretamente pelo lote, o preço principal seja atualizado
               prod.preco_venda = Number(lote.preco_venda) || Number(lote.produtos.preco_venda);
             }
           }
@@ -240,13 +236,11 @@ export default function PDV() {
     return () => clearTimeout(timer);
   }, [search, searchProducts]);
 
-  // ✅ CORREÇÃO PRINCIPAL: Busca estruturada para lidar com leitura por bip
   const handleSearchExact = async (e: React.FormEvent) => {
     e.preventDefault();
     const query = search.trim();
     if (!query) return;
 
-    // Limpa o estado imediatamente para evitar interações residuais
     setShowResults(false);
     setProdutos([]);
     setSearch('');
@@ -270,27 +264,28 @@ export default function PDV() {
           .eq('produto_id', p.id)
           .gt('quantidade_atual', 0);
 
-        if (lotesDoProduto && lotesDoProduto.length > 1) {
-          // Abre modal de lotes
+        const lotesValidos = (lotesDoProduto || []).filter(l => Number(l.quantidade_atual) > 0);
+
+        if (lotesValidos.length > 1) {
+          // Abre modal de lotes SOMENTE se houver mais de 1 lote com estoque
           setLotSelectionItem({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
             estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-            lotes: lotesDoProduto.map(l => ({
+            lotes: lotesValidos.map(l => ({
               id: l.id,
               codigo: l.codigo_barras,
               data_validade: l.data_validade,
               quantidade_atual: l.quantidade_atual,
               observacao: l.observacao,
-              // ✅ AGORA PUXA O PREÇO DO LOTE E NÃO MAIS DO PRODUTO (p.preco_venda)
               preco_venda_lote: Number(l.preco_venda) || Number(p.preco_venda) || 0,
               nome_produto_lote: p.nome
             }))
           });
           return;
-        } else if (lotesDoProduto && lotesDoProduto.length === 1) {
+        } else if (lotesValidos.length === 1) {
           // Único lote, adiciona direto
-          const lote = lotesDoProduto[0];
+          const lote = lotesValidos[0];
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(lote.preco_venda) || Number(p.preco_venda) || 0,
@@ -318,9 +313,11 @@ export default function PDV() {
         .eq('codigo_barras', query)
         .gt('quantidade_atual', 0);
 
-      if (lotesData && lotesData.length > 0) {
-        if (lotesData.length === 1) {
-          const lote = lotesData[0];
+      const lotesValidos = (lotesData || []).filter(l => Number(l.quantidade_atual) > 0);
+
+      if (lotesValidos.length > 0) {
+        if (lotesValidos.length === 1) {
+          const lote = lotesValidos[0];
           const p = lote.produtos;
           if (p) {
             if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
@@ -336,13 +333,13 @@ export default function PDV() {
           }
         } else {
           // Raro: múltiplos lotes diferentes com o mesmo código de barras
-          const baseProd = lotesData[0].produtos;
+          const baseProd = lotesValidos[0].produtos;
           if (baseProd) {
             setLotSelectionItem({
               id: baseProd.id, nome: baseProd.nome, codigo: baseProd.codigo || '', marca: baseProd.marca || '',
               preco_venda: Number(baseProd.preco_venda) || 0, preco_custo: Number(baseProd.preco_custo) || 0,
               estoque_atual: Number(baseProd.estoque_atual) || 0, categoria: baseProd.categoria || '',
-              lotes: lotesData.map(l => ({
+              lotes: lotesValidos.map(l => ({
                 id: l.id,
                 codigo: l.codigo_barras,
                 data_validade: l.data_validade,
@@ -366,15 +363,14 @@ export default function PDV() {
   const addToCart = (product: Produto) => {
     if (product.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
-    // Filtra apenas lotes que possuem saldo para evitar mostrar no modal lotes vazios
-    const activeLotes = product.lotes ? product.lotes.filter(l => (l.quantidade_atual || 0) > 0) : [];
+    // Filtra apenas lotes que possuem saldo real > 0
+    const activeLotes = product.lotes ? product.lotes.filter(l => Number(l.quantidade_atual || 0) > 0) : [];
 
     if (!product.lote_id && activeLotes.length > 1) {
       setLotSelectionItem({
         ...product,
         lotes: activeLotes.map(l => ({
           ...l,
-          // ✅ GARANTE QUE O PREÇO SEJA O DO LOTE E NÃO O PREÇO BASE DO PRODUTO
           preco_venda_lote: Number(l.preco_venda_lote) || product.preco_venda,
           nome_produto_lote: product.nome
         }))
@@ -387,7 +383,6 @@ export default function PDV() {
     if (!finalProduct.lote_id && activeLotes.length === 1) {
       finalProduct.lote_id = activeLotes[0].id;
       finalProduct.lote_codigo = activeLotes[0].codigo;
-      // ✅ ATUALIZA O PREÇO DE VENDA PARA O PREÇO DO LOTE ÚNICO ENCONTRADO
       finalProduct.preco_venda = Number(activeLotes[0].preco_venda_lote) || finalProduct.preco_venda;
     }
 
@@ -433,7 +428,7 @@ export default function PDV() {
           nome: product.nome,
           codigo: product.codigo,
           marca: product.marca,
-          price: product.preco_venda, // Aqui o preço já chega correto se for lote
+          price: product.preco_venda,
           preco_custo: product.preco_custo,
           quantity: 1,
           stock: product.estoque_atual,
@@ -454,7 +449,6 @@ export default function PDV() {
     executeAddToCart({ 
       ...product, 
       nome: lote.nome_produto_lote || product.nome,
-      // ✅ GARANTIA de que está usando o valor mapeado na abertura do modal
       preco_venda: Number(lote.preco_venda_lote) || product.preco_venda,
       lote_id: lote.id, 
       lote_codigo: lote.codigo 
@@ -592,12 +586,13 @@ export default function PDV() {
     setSaving(true);
     try {
       const selectedVendedor = vendedores.find(v => v.id === vendedorId);
+      const nomeVendedor = selectedVendedor?.nome_usuario || 'Não Informado';
       const formaPrincipalId = pagamentos.length > 0 ? pagamentos[0].forma_pagamento_id : null;
       const { data: venda, error: vendaErr } = await supabase.from('vendas').insert({
         cliente_id: clienteObj?.id || null,
         cliente_nome_manual: clienteObj ? null : clienteManual,
         usuario_id: user?.id || 'Operador',
-        vendedor_nome: selectedVendedor?.nome_usuario || 'Não Informado',
+        vendedor_nome: nomeVendedor,
         subtotal: subtotalSemDesconto,
         desconto: totalDescontoAplicado,
         custo_adicional: Number(custoAdicional) || 0,
@@ -665,19 +660,29 @@ export default function PDV() {
         }).eq('id', clienteObj.id);
       }
 
-      // Registro automático no caixa para cada split em dinheiro
+      // ✅ CORREÇÃO: Registro automático no caixa para pagamentos em dinheiro
+      // Calcula o troco uma única vez e distribui corretamente
+      let trocoRestante = troco;
       for (const pgt of pagamentos) {
         const forma = formas.find(f => f.id === pgt.forma_pagamento_id);
         const nomeLower = forma?.nome?.toLowerCase() || '';
         if (nomeLower.includes('dinheiro')) {
-          const valorParaCaixa = Number(pgt.valor) - (troco > 0 ? troco : 0);
+          const valorPago = Number(pgt.valor) || 0;
+          // Subtrai o troco apenas do primeiro split de dinheiro que cobrir
+          const trocoDescontado = Math.min(trocoRestante, valorPago);
+          const valorParaCaixa = valorPago - trocoDescontado;
+          trocoRestante = trocoRestante - trocoDescontado;
+
           if (valorParaCaixa > 0) {
-            await supabase.from('caixa_movimentos').insert({
-              usuario_id: selectedVendedor?.nome_usuario || user?.nome_usuario || user?.name || 'Sistema',
+            const { error: caixaErr } = await supabase.from('caixa_movimentos').insert({
+              usuario_id: nomeVendedor,
               tipo: 'entrada',
               valor: valorParaCaixa,
               descricao: `Venda #${venda.id.substring(0, 8)} - ${forma?.nome || 'Dinheiro'}`,
             });
+            if (caixaErr) {
+              console.error('Erro ao registrar entrada no caixa:', caixaErr);
+            }
           }
         }
       }
