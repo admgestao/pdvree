@@ -17,11 +17,11 @@ interface CartItem {
   preco_custo: number;
   quantity: number;
   stock: number;
-  lote_stock: number;
   discount: number;
   discountType: 'percent' | 'fixed';
   lote_id?: string;
   lote_codigo?: string;
+  lote_observacao?: string;
 }
 
 interface PromoAtiva {
@@ -46,6 +46,7 @@ interface Produto {
   categoria: string;
   lote_id?: string;
   lote_codigo?: string;
+  lote_observacao?: string;
   lotes?: { 
     id: string;
     codigo: string;
@@ -82,9 +83,13 @@ interface PagamentoSplit {
   valor: number;
 }
 
-// Função utilitária para normalizar texto removendo acentos e diacríticos
-function normalizeText(text: string): string {
-  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const normalizeStr = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+function resolvePrecoLote(precoLote: any, precoFallback: any): number {
+  if (precoLote !== null && precoLote !== undefined && Number(precoLote) > 0) {
+    return Number(precoLote);
+  }
+  return Number(precoFallback) || 0;
 }
 
 export default function PDV() {
@@ -116,9 +121,8 @@ export default function PDV() {
     return localStorage.getItem('@pdv:vendedor_id') || '';
   });
   const [lotSelectionItem, setLotSelectionItem] = useState<Produto | null>(null);
-  const [lotSelectionQtds, setLotSelectionQtds] = useState<Record<string, number>>({});
+  const [lotQuantities, setLotQuantities] = useState<Record<string, number>>({});
 
-  // Estados para múltiplos pagamentos
   const [pagamentos, setPagamentos] = useState<PagamentoSplit[]>([]);
   const darkScrollbarClass = "scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent overflow-y-auto";
   const customScrollStyles = {
@@ -164,15 +168,17 @@ export default function PDV() {
     if (!query) { setProdutos([]); setShowResults(false); return; }
     
     try {
+      const normalizedQuery = normalizeStr(query);
       const searchPattern = `%${query.replace(/\s+/g, '%')}%`;
+      
       const { data: pData } = await supabase.from('produtos').select('*')
         .or(`nome.ilike.${searchPattern},codigo.ilike.${searchPattern},categoria.ilike.${searchPattern}`)
-        .limit(20);
+        .limit(30);
       
       const { data: lData } = await supabase.from('produto_lotes')
         .select('*, produtos(*)')
         .ilike('codigo_barras', `%${query}%`)
-        .limit(10);
+        .limit(5);
 
       const pIds = (pData || []).map(p => p.id);
       let lotesAdicionais: any[] = [];
@@ -196,11 +202,14 @@ export default function PDV() {
       lotesAdicionais.forEach(lote => {
         const prod = produtosMap.get(lote.produto_id);
         if (prod && prod.lotes) {
-           prod.lotes.push({ 
-             id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-             quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-             preco_venda_lote: Number(lote.preco_venda) || Number(prod.preco_venda)
-           });
+          prod.lotes.push({ 
+            id: lote.id, 
+            codigo: lote.codigo_barras, 
+            data_validade: lote.data_validade,
+            quantidade_atual: lote.quantidade_atual, 
+            observacao: lote.observacao,
+            preco_venda_lote: resolvePrecoLote(lote.preco_venda, prod.preco_venda)
+          });
         }
       });
 
@@ -219,33 +228,37 @@ export default function PDV() {
             }
             if (prod.lotes && !prod.lotes.find(l => l.id === lote.id)) {
               prod.lotes.push({
-                id: lote.id, codigo: lote.codigo_barras, data_validade: lote.data_validade,
-                quantidade_atual: lote.quantidade_atual, observacao: lote.observacao,
-                preco_venda_lote: Number(lote.preco_venda) || Number(lote.produtos.preco_venda)
+                id: lote.id, 
+                codigo: lote.codigo_barras, 
+                data_validade: lote.data_validade,
+                quantidade_atual: lote.quantidade_atual, 
+                observacao: lote.observacao,
+                preco_venda_lote: resolvePrecoLote(lote.preco_venda, lote.produtos.preco_venda)
               });
             }
             if (query === lote.codigo_barras) {
               prod.lote_id = lote.id;
               prod.lote_codigo = lote.codigo_barras;
-              prod.preco_venda = Number(lote.preco_venda) || Number(lote.produtos.preco_venda);
+              prod.lote_observacao = lote.observacao || '';
+              prod.preco_venda = resolvePrecoLote(lote.preco_venda, lote.produtos.preco_venda);
             }
           }
         });
       }
 
-      // Filtragem local com suporte a acentos
-      const normalizedQuery = normalizeText(query);
-      const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+      const allProds = Array.from(produtosMap.values());
+      const termsNormalized = normalizedQuery.replace(/%/g, ' ').trim().split(/\s+/).filter(Boolean);
 
-      const allProducts = Array.from(produtosMap.values());
-      const filteredProducts = allProducts.filter(p => {
-        const searchableText = normalizeText(
-          [p.nome, p.marca, p.codigo, p.categoria, ...(p.lotes?.map(l => l.codigo) || [])].filter(Boolean).join(' ')
-        );
-        return queryTerms.every(term => searchableText.includes(term));
-      });
+      const filteredProds = termsNormalized.length > 0
+        ? allProds.filter(p => {
+            const haystack = normalizeStr(
+              [p.nome, p.codigo, p.categoria, p.marca, ...(p.lotes?.map(l => l.codigo) || [])].filter(Boolean).join(' ')
+            );
+            return termsNormalized.every(t => haystack.includes(t));
+          })
+        : allProds;
 
-      setProdutos(filteredProducts);
+      setProdutos(filteredProds);
       setShowResults(true);
     } catch (error) { toast.error("Erro ao buscar produtos"); }
   }, []);
@@ -260,65 +273,89 @@ export default function PDV() {
     const query = search.trim();
     if (!query) return;
 
+    const queryNormalized = normalizeStr(query);
+
     setShowResults(false);
     setProdutos([]);
     setSearch('');
 
     try {
-      // 1. Tenta buscar primeiro pelo código exato do PRODUTO
+      // 1. Tenta buscar primeiro pelo código exato do PRODUTO ou nome normalizado
       const { data: prodsData } = await supabase
         .from('produtos')
         .select('*')
-        .eq('codigo', query)
         .eq('ativo', true);
 
-      if (prodsData && prodsData.length > 0) {
-        const p = prodsData[0];
+      const prodExato = (prodsData || []).find(p => 
+        normalizeStr(p.codigo || '') === queryNormalized ||
+        normalizeStr(p.nome || '') === queryNormalized ||
+        (p.codigo || '').toLowerCase() === query.toLowerCase()
+      );
+      
+      const prodParcial = !prodExato ? (prodsData || []).find(p =>
+        normalizeStr(p.codigo || '').includes(queryNormalized) ||
+        normalizeStr(p.nome || '').includes(queryNormalized)
+      ) : null;
+
+      const p = prodExato || prodParcial;
+
+      if (p) {
         if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
-        // Busca TODOS os lotes ativos com estoque para este produto
         const { data: lotesDoProduto } = await supabase
           .from('produto_lotes')
           .select('*')
           .eq('produto_id', p.id)
           .gt('quantidade_atual', 0);
 
-        const lotesValidos = (lotesDoProduto || []).filter(l => Number(l.quantidade_atual) > 0);
+        const todosLotesValidos = (lotesDoProduto || []).filter(l => Number(l.quantidade_atual) > 0);
 
-        if (lotesValidos.length > 1) {
-          // Abre modal de lotes com seleção de quantidade
-          const prodForModal: Produto = {
+        // ALTERAÇÃO 01: Verificar se a busca foi por código de barras
+        // Se o código digitado bate com algum lote, filtra apenas esses lotes
+        const isCodigoBusca = prodExato && (prodExato.codigo || '').toLowerCase() === query.toLowerCase();
+        let lotesParaExibir = todosLotesValidos;
+        
+        if (isCodigoBusca || (!prodExato && prodParcial)) {
+          // Verifica se o código digitado corresponde a lotes específicos
+          const lotesFiltradosPorCodigo = todosLotesValidos.filter(
+            l => (l.codigo_barras || '').toLowerCase() === query.toLowerCase()
+          );
+          if (lotesFiltradosPorCodigo.length > 0) {
+            lotesParaExibir = lotesFiltradosPorCodigo;
+          }
+        }
+
+        // ALTERAÇÃO 02: Se só tem 1 lote, vai direto pro carrinho sem modal
+        if (lotesParaExibir.length > 1) {
+          setLotSelectionItem({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
             estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-            lotes: lotesValidos.map(l => ({
-              id: l.id,
-              codigo: l.codigo_barras,
-              data_validade: l.data_validade,
-              quantidade_atual: l.quantidade_atual,
-              observacao: l.observacao,
-              preco_venda_lote: Number(l.preco_venda) || Number(p.preco_venda) || 0,
-              nome_produto_lote: p.nome
-            }))
-          };
-          const initialQtds: Record<string, number> = {};
-          lotesValidos.forEach(l => { initialQtds[l.id] = 0; });
-          setLotSelectionQtds(initialQtds);
-          setLotSelectionItem(prodForModal);
+            lotes: lotesParaExibir.map(l => {
+              return {
+                id: l.id,
+                codigo: l.codigo_barras,
+                data_validade: l.data_validade,
+                quantidade_atual: l.quantidade_atual,
+                observacao: l.observacao,
+                preco_venda_lote: resolvePrecoLote(l.preco_venda, p.preco_venda),
+                nome_produto_lote: p.nome
+              };
+            })
+          });
+          setLotQuantities({});
           return;
-        } else if (lotesValidos.length === 1) {
-          // Único lote, adiciona direto
-          const lote = lotesValidos[0];
+        } else if (lotesParaExibir.length === 1) {
+          const lote = lotesParaExibir[0];
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
-            preco_venda: Number(lote.preco_venda) || Number(p.preco_venda) || 0,
+            preco_venda: resolvePrecoLote(lote.preco_venda, p.preco_venda),
             preco_custo: Number(p.preco_custo) || 0,
             estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-            lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
-          }, 1, Number(lote.quantidade_atual) || 0);
+            lote_id: lote.id, lote_codigo: lote.codigo_barras, lote_observacao: lote.observacao || '', lotes: []
+          });
           return;
         } else {
-          // Sem lotes mapeados, adiciona produto puro
           executeAddToCart({
             id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
             preco_venda: Number(p.preco_venda) || 0, preco_custo: Number(p.preco_custo) || 0,
@@ -339,43 +376,43 @@ export default function PDV() {
       const lotesValidos = (lotesData || []).filter(l => Number(l.quantidade_atual) > 0);
 
       if (lotesValidos.length > 0) {
+        // ALTERAÇÃO 01: Aqui já estamos filtrando por código exato do lote
+        // ALTERAÇÃO 02: Se só tem 1, vai direto
         if (lotesValidos.length === 1) {
           const lote = lotesValidos[0];
-          const p = lote.produtos;
-          if (p) {
-            if (p.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
+          const pLote = lote.produtos;
+          if (pLote) {
+            if (pLote.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
             executeAddToCart({
-              id: p.id, nome: p.nome, codigo: p.codigo || '', marca: p.marca || '',
-              preco_venda: Number(lote.preco_venda) || Number(p.preco_venda) || 0,
-              preco_custo: Number(p.preco_custo) || 0,
-              estoque_atual: Number(p.estoque_atual) || 0, categoria: p.categoria || '',
-              lote_id: lote.id, lote_codigo: lote.codigo_barras, lotes: []
-            }, 1, Number(lote.quantidade_atual) || 0);
+              id: pLote.id, nome: pLote.nome, codigo: pLote.codigo || '', marca: pLote.marca || '',
+              preco_venda: resolvePrecoLote(lote.preco_venda, pLote.preco_venda),
+              preco_custo: Number(pLote.preco_custo) || 0,
+              estoque_atual: Number(pLote.estoque_atual) || 0, categoria: pLote.categoria || '',
+              lote_id: lote.id, lote_codigo: lote.codigo_barras, lote_observacao: lote.observacao || '', lotes: []
+            });
           } else {
             toast.error('Produto base não encontrado para este lote.');
           }
         } else {
-          // Raro: múltiplos lotes diferentes com o mesmo código de barras
           const baseProd = lotesValidos[0].produtos;
           if (baseProd) {
-            const prodForModal: Produto = {
+            setLotSelectionItem({
               id: baseProd.id, nome: baseProd.nome, codigo: baseProd.codigo || '', marca: baseProd.marca || '',
               preco_venda: Number(baseProd.preco_venda) || 0, preco_custo: Number(baseProd.preco_custo) || 0,
               estoque_atual: Number(baseProd.estoque_atual) || 0, categoria: baseProd.categoria || '',
-              lotes: lotesValidos.map(l => ({
-                id: l.id,
-                codigo: l.codigo_barras,
-                data_validade: l.data_validade,
-                quantidade_atual: l.quantidade_atual,
-                observacao: l.observacao,
-                preco_venda_lote: Number(l.preco_venda) || Number(baseProd.preco_venda) || 0,
-                nome_produto_lote: baseProd.nome || ''
-              }))
-            };
-            const initialQtds: Record<string, number> = {};
-            lotesValidos.forEach(l => { initialQtds[l.id] = 0; });
-            setLotSelectionQtds(initialQtds);
-            setLotSelectionItem(prodForModal);
+              lotes: lotesValidos.map(l => {
+                return {
+                  id: l.id,
+                  codigo: l.codigo_barras,
+                  data_validade: l.data_validade,
+                  quantidade_atual: l.quantidade_atual,
+                  observacao: l.observacao,
+                  preco_venda_lote: resolvePrecoLote(l.preco_venda, baseProd.preco_venda),
+                  nome_produto_lote: baseProd.nome || ''
+                };
+              })
+            });
+            setLotQuantities({});
           }
         }
       } else {
@@ -390,22 +427,18 @@ export default function PDV() {
   const addToCart = (product: Produto) => {
     if (product.estoque_atual <= 0) { toast.error('Produto sem estoque'); return; }
 
-    // Filtra apenas lotes que possuem saldo real > 0
     const activeLotes = product.lotes ? product.lotes.filter(l => Number(l.quantidade_atual || 0) > 0) : [];
 
     if (!product.lote_id && activeLotes.length > 1) {
-      const prodForModal = {
+      setLotSelectionItem({
         ...product,
         lotes: activeLotes.map(l => ({
           ...l,
-          preco_venda_lote: Number(l.preco_venda_lote) || product.preco_venda,
+          preco_venda_lote: resolvePrecoLote(l.preco_venda_lote, product.preco_venda),
           nome_produto_lote: product.nome
         }))
-      };
-      const initialQtds: Record<string, number> = {};
-      activeLotes.forEach(l => { initialQtds[l.id] = 0; });
-      setLotSelectionQtds(initialQtds);
-      setLotSelectionItem(prodForModal);
+      });
+      setLotQuantities({});
       setShowResults(false);
       return;
     }
@@ -414,17 +447,14 @@ export default function PDV() {
     if (!finalProduct.lote_id && activeLotes.length === 1) {
       finalProduct.lote_id = activeLotes[0].id;
       finalProduct.lote_codigo = activeLotes[0].codigo;
-      finalProduct.preco_venda = Number(activeLotes[0].preco_venda_lote) || finalProduct.preco_venda;
+      finalProduct.lote_observacao = activeLotes[0].observacao || '';
+      finalProduct.preco_venda = resolvePrecoLote(activeLotes[0].preco_venda_lote, finalProduct.preco_venda);
     }
 
-    const loteStock = finalProduct.lote_id 
-      ? Number(activeLotes.find(l => l.id === finalProduct.lote_id)?.quantidade_atual || 0)
-      : 0;
-
-    executeAddToCart(finalProduct, 1, loteStock);
+    executeAddToCart(finalProduct);
   };
 
-  const executeAddToCart = (product: Produto, qty: number = 1, loteStock: number = 0) => {
+  const executeAddToCart = (product: Produto) => {
     setCart((prev) => {
       const normalizedLoteId = product.lote_id ?? null;
 
@@ -436,23 +466,21 @@ export default function PDV() {
         )
       );
 
-      if (!existing && !normalizedLoteId) {
+      if (!existing) {
         const sameProdItems = prev.filter((i) => i.id === product.id);
-        if (sameProdItems.length === 1) {
+        if (sameProdItems.length === 1 && !normalizedLoteId) {
           existing = sameProdItems[0];
         }
       }
 
       if (existing) {
-        const newQty = existing.quantity + qty;
-        const maxStock = existing.lote_id ? existing.lote_stock : existing.stock;
-        if (newQty > maxStock) { 
-          toast.error(`Limite de estoque atingido (${maxStock} disponíveis no ${existing.lote_id ? 'lote' : 'produto'})`);
+        if (existing.quantity >= existing.stock) { 
+          toast.error('Limite atingido');
           return prev; 
         }
         return prev.map((i) =>
           i.cartItemId === existing!.cartItemId
-            ? { ...i, quantity: newQty }
+            ? { ...i, quantity: i.quantity + 1 }
             : i
         );
       }
@@ -467,13 +495,13 @@ export default function PDV() {
           marca: product.marca,
           price: product.preco_venda,
           preco_custo: product.preco_custo,
-          quantity: qty,
+          quantity: 1,
           stock: product.estoque_atual,
-          lote_stock: loteStock || product.estoque_atual,
           discount: 0,
           discountType: 'percent',
           lote_id: product.lote_id,
           lote_codigo: product.lote_codigo,
+          lote_observacao: product.lote_observacao || '',
         },
       ];
     });
@@ -483,59 +511,58 @@ export default function PDV() {
     setShowResults(false);
   };
 
-  const handleConfirmLotSelection = () => {
-    if (!lotSelectionItem) return;
-
-    const selectedLotes = Object.entries(lotSelectionQtds).filter(([_, qty]) => qty > 0);
-
-    if (selectedLotes.length === 0) {
-      toast.error('Selecione a quantidade de pelo menos um lote');
+  const handleSelectSpecificLot = (product: Produto, lote: any, quantidade: number) => {
+    if (quantidade <= 0) {
+      toast.error('Quantidade deve ser maior que zero');
+      return;
+    }
+    if (quantidade > Number(lote.quantidade_atual || 0)) {
+      toast.error(`Estoque do lote insuficiente. Disponível: ${lote.quantidade_atual}`);
       return;
     }
 
-    // Valida quantidades
-    for (const [loteId, qty] of selectedLotes) {
-      const lote = lotSelectionItem.lotes?.find(l => l.id === loteId);
-      if (!lote) continue;
-      const disponivel = Number(lote.quantidade_atual || 0);
-      if (qty > disponivel) {
-        toast.error(`Quantidade (${qty}) excede o estoque do lote ${lote.codigo} (${disponivel} disponíveis)`);
-        return;
+    const loteObs = lote.observacao ? ` [${lote.observacao}]` : '';
+    const nomeFinal = `${lote.nome_produto_lote || product.nome}${loteObs}`;
+    const precoLote = resolvePrecoLote(lote.preco_venda_lote, product.preco_venda);
+
+    setCart((prev) => {
+      const existing = prev.find(
+        (i) => i.id === product.id && i.lote_id === lote.id
+      );
+
+      if (existing) {
+        const newQty = existing.quantity + quantidade;
+        if (newQty > Number(lote.quantidade_atual || 0)) {
+          toast.error(`Limite do lote atingido. Disponível: ${lote.quantidade_atual}`);
+          return prev;
+        }
+        return prev.map((i) =>
+          i.cartItemId === existing.cartItemId
+            ? { ...i, quantity: newQty }
+            : i
+        );
       }
-    }
 
-    // Adiciona cada lote selecionado ao carrinho
-    for (const [loteId, qty] of selectedLotes) {
-      const lote = lotSelectionItem.lotes?.find(l => l.id === loteId);
-      if (!lote) continue;
-
-      executeAddToCart({
-        ...lotSelectionItem,
-        nome: lote.nome_produto_lote || lotSelectionItem.nome,
-        preco_venda: Number(lote.preco_venda_lote) || lotSelectionItem.preco_venda,
-        lote_id: lote.id,
-        lote_codigo: lote.codigo,
-        lotes: []
-      }, qty, Number(lote.quantidade_atual || 0));
-    }
-
-    setLotSelectionItem(null);
-    setLotSelectionQtds({});
-  };
-
-  const handleSelectSpecificLot = (product: Produto, lote: any) => {
-    // Mantido para compatibilidade, mas agora usado apenas quando se clica direto
-    // (caso de lote único ou ação direta)
-    executeAddToCart({ 
-      ...product, 
-      nome: lote.nome_produto_lote || product.nome,
-      preco_venda: Number(lote.preco_venda_lote) || product.preco_venda,
-      lote_id: lote.id, 
-      lote_codigo: lote.codigo,
-      lotes: []
-    }, 1, Number(lote.quantidade_atual || 0));
-    setLotSelectionItem(null);
-    setLotSelectionQtds({});
+      return [
+        ...prev,
+        {
+          cartItemId: crypto.randomUUID(),
+          id: product.id,
+          nome: nomeFinal,
+          codigo: product.codigo,
+          marca: product.marca,
+          price: precoLote,
+          preco_custo: product.preco_custo,
+          quantity: quantidade,
+          stock: Number(lote.quantidade_atual || 0),
+          discount: 0,
+          discountType: 'percent',
+          lote_id: lote.id,
+          lote_codigo: lote.codigo,
+          lote_observacao: lote.observacao || '',
+        },
+      ];
+    });
   };
 
   const updateQty = (cartItemId: string, delta: number) => {
@@ -543,11 +570,7 @@ export default function PDV() {
       if (i.cartItemId !== cartItemId) return i;
       const newQty = i.quantity + delta;
       if (newQty <= 0) return null as any;
-      const maxStock = i.lote_id ? i.lote_stock : i.stock;
-      if (newQty > maxStock) { 
-        toast.error(`Estoque insuficiente no ${i.lote_id ? 'lote' : 'produto'} (${maxStock} disponíveis)`); 
-        return i; 
-      }
+      if (newQty > i.stock) { toast.error('Estoque insuficiente'); return i; }
       return { ...i, quantity: newQty };
     }).filter(Boolean));
   };
@@ -600,7 +623,6 @@ export default function PDV() {
   const total = totalBruto - valorAbatidoCredito;
   const lucroLiquido = (totalItensComDescontoIndividual - descontoGeralVal) - totalCustoItens + (custoNoLucro ? Number(custoAdicional) : 0);
 
-  // Lógica dos múltiplos pagamentos
   const totalPagamentos = pagamentos.reduce((s, p) => s + (Number(p.valor) || 0), 0);
   const restantePagamento = total - totalPagamentos;
 
@@ -622,7 +644,6 @@ export default function PDV() {
     ));
   };
 
-  // Troco calculado apenas sobre dinheiro
   const troco = (() => {
     const pagamentosDinheiro = pagamentos.filter(p => {
       const forma = formas.find(f => f.id === p.forma_pagamento_id);
@@ -694,7 +715,6 @@ export default function PDV() {
       }).select('id').single();
       if (vendaErr) throw vendaErr;
 
-      // Salvar pagamentos detalhados
       const pagamentosParaSalvar = pagamentos.map(p => ({
         venda_id: venda.id,
         forma_pagamento_id: p.forma_pagamento_id,
@@ -720,24 +740,37 @@ export default function PDV() {
       const { error: itensErr } = await supabase.from('vendas_itens').insert(itensParaSalvar);
       if (itensErr) throw itensErr;
 
+      const estoquesPorProduto = new Map<string, number>();
       for (const item of cart) {
-        // Atualiza estoque geral do produto
-        await supabase.from('produtos').update({ 
-          estoque_atual: item.stock - item.quantity 
-        }).eq('id', item.id);
+        const prev = estoquesPorProduto.get(item.id) || 0;
+        estoquesPorProduto.set(item.id, prev + item.quantity);
+      }
 
-        // Atualiza estoque específico do lote
+      for (const [produtoId, totalQtd] of estoquesPorProduto.entries()) {
+        const { data: prodAtual } = await supabase.from('produtos')
+          .select('estoque_atual')
+          .eq('id', produtoId)
+          .single();
+        if (prodAtual) {
+          const novoEstoque = Math.max(0, Number(prodAtual.estoque_atual) - totalQtd);
+          await supabase.from('produtos').update({
+            estoque_atual: novoEstoque
+          }).eq('id', produtoId);
+        }
+      }
+
+      for (const item of cart) {
         if (item.lote_id) {
           const { data: lote } = await supabase.from('produto_lotes')
             .select('quantidade_atual, quantidade')
             .eq('id', item.lote_id)
             .single();
           if (lote) {
-            const novaQtd = Number(lote.quantidade_atual || lote.quantidade || 0) - item.quantity;
-            await supabase.from('produto_lotes').update({ 
-              quantidade_atual: novaQtd, 
-              quantidade: novaQtd, 
-              status: novaQtd <= 0 ? 'esgotado' : 'ativo' 
+            const novaQtd = Math.max(0, Number(lote.quantidade_atual || lote.quantidade || 0) - item.quantity);
+            await supabase.from('produto_lotes').update({
+              quantidade_atual: novaQtd,
+              quantidade: novaQtd,
+              status: novaQtd <= 0 ? 'esgotado' : 'ativo'
             }).eq('id', item.lote_id);
           }
         }
@@ -749,7 +782,6 @@ export default function PDV() {
         }).eq('id', clienteObj.id);
       }
 
-      // Registro no caixa para pagamentos em dinheiro
       const splitsDinheiro = pagamentos.filter(pgt => {
         const forma = formas.find(f => f.id === pgt.forma_pagamento_id);
         return forma?.nome?.toLowerCase().includes('dinheiro');
@@ -784,13 +816,6 @@ export default function PDV() {
       setSaving(false);
     }
   }
-
-  // Calcula o total de itens selecionados no modal de lotes
-  const lotSelectionTotalQty = Object.values(lotSelectionQtds).reduce((s, q) => s + (Number(q) || 0), 0);
-  const lotSelectionTotalValue = lotSelectionItem?.lotes?.reduce((sum, lote) => {
-    const qty = lotSelectionQtds[lote.id] || 0;
-    return sum + (qty * (Number(lote.preco_venda_lote) || lotSelectionItem.preco_venda));
-  }, 0) || 0;
 
   return (
     <div className="h-[calc(100vh-3rem)] flex flex-col lg:flex-row animate-fade-in bg-background text-foreground">
@@ -829,7 +854,7 @@ export default function PDV() {
                   <button key={p.id + '-' + idx} type="button" onClick={() => addToCart(p)} className={`w-full flex items-center justify-between px-3 py-2.5 hover:bg-accent/50 text-left border-b border-border last:border-0 ${p.estoque_atual <= 0 ? 'bg-red-500/20 border-red-500/40' : ''}`}>
                     <div>
                       <p className={`text-sm font-bold ${p.estoque_atual <= 0 ? 'text-red-500 underline' : ''}`}>{p.nome}</p>
-                      <p className="text-[10px] text-muted-foreground uppercase mt-0.5">{p.categoria} {p.marca ? ` • ${p.marca}` : ''} • {p.estoque_atual <= 0 ? <span className="text-red-600 font-black animate-pulse">⚠️ SEM ESTOQUE</span> : `Estoque: ${p.estoque_atual}`}</p>
+                      <p className="text-[10px] text-muted-foreground uppercase mt-0.5">{p.categoria} {p.marca ? `  ${p.marca}` : ''}  {p.estoque_atual <= 0 ? <span className="text-red-600 font-black animate-pulse"> SEM ESTOQUE</span> : `Estoque: ${p.estoque_atual}`}</p>
                       {p.lotes && p.lotes.length > 0 && (<p className="text-[10px] text-blue-500 font-bold mt-0.5">{p.lotes.length === 1 ? `LOTE: ${p.lotes[0].codigo}` : `${p.lotes.length} LOTES DISPONÍVEIS`}</p>)}
                     </div>
                     <span className={`text-sm font-mono font-semibold ${p.estoque_atual <= 0 ? 'text-red-400' : 'text-primary'}`}>{fCurrency(p.preco_venda)}</span>
@@ -856,7 +881,6 @@ export default function PDV() {
             cart.map((item) => {
               const { unitPrice, promo } = getDynamicItemPrice(item);
               const isPromo = promo !== null;
-              const maxStock = item.lote_id ? item.lote_stock : item.stock;
 
               return (
                 <div key={item.cartItemId} className={`rounded-lg border bg-card p-3 flex flex-col gap-2 ${isPromo ? 'border-primary/50 bg-primary/5' : 'border-border'}`}>
@@ -867,9 +891,15 @@ export default function PDV() {
                         {isPromo && <span className="text-[9px] bg-primary text-primary-foreground px-1.5 py-0.5 rounded font-black flex items-center gap-1"><Tag className="h-2.5 w-2.5"/> {promo.nome_promocao}</span>}
                       </div>
                       <p className="text-[10px] text-muted-foreground">
-                        {item.lote_id ? `Lote: ${item.lote_stock}` : `Estoque: ${item.stock}`} • Unit: {isPromo ? <><span className="line-through opacity-50">{fCurrency(item.price)}</span> <span className="text-primary font-bold">{fCurrency(unitPrice)}</span></> : fCurrency(item.price)}
+                        Estoque Lote: {item.stock}  Unit: {isPromo ? <><span className="line-through opacity-50">{fCurrency(item.price)}</span> <span className="text-primary font-bold">{fCurrency(unitPrice)}</span></> : fCurrency(item.price)}
                       </p>
                       {item.lote_codigo && (<p className="text-[10px] text-blue-500 font-medium mt-0.5">Lote: {item.lote_codigo}</p>)}
+                      {/* ALTERAÇÃO 03: Exibir observação do lote no carrinho */}
+                      {item.lote_observacao && (
+                        <p className="text-[10px] text-amber-500 font-medium mt-0.5 flex items-center gap-1">
+                          <Info className="h-3 w-3" /> {item.lote_observacao}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="flex items-center gap-1.5 border-r border-border pr-3">
@@ -882,7 +912,7 @@ export default function PDV() {
                       <div className="flex items-center rounded-lg border border-border bg-secondary">
                         <button type="button" onClick={() => updateQty(item.cartItemId, -1)} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-l-lg"><Minus className="h-3 w-3" /></button>
                         <span className="h-8 w-8 flex items-center justify-center text-sm font-mono border-x border-border">{item.quantity}</span>
-                        <button type="button" onClick={() => updateQty(item.cartItemId, 1)} disabled={item.quantity >= maxStock} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-r-lg disabled:opacity-30"><Plus className="h-3 w-3" /></button>
+                        <button type="button" onClick={() => updateQty(item.cartItemId, 1)} disabled={item.quantity >= item.stock} className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-r-lg"><Plus className="h-3 w-3" /></button>
                       </div>
                       <span className={`text-sm font-mono font-bold w-24 text-right ${isPromo ? 'text-primary' : ''}`}>{fCurrency(getItemTotal(item))}</span>
                       <button type="button" onClick={() => removeItem(item.cartItemId)} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-4 w-4" /></button>
@@ -1001,115 +1031,190 @@ export default function PDV() {
           <div className="w-full max-w-lg rounded-xl border border-border bg-card p-6 space-y-4 shadow-xl animate-in zoom-in-95">
             <div className="flex justify-between items-center border-b border-border pb-3">
               <div>
-                <h2 className="text-lg font-bold text-primary">Selecionar Lote e Quantidade</h2>
-                <p className="text-sm text-muted-foreground mt-0.5">{lotSelectionItem.nome}</p>
+                <h2 className="text-lg font-bold text-primary">Múltiplos Lotes Encontrados</h2>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  Informe a quantidade de cada lote que deseja adicionar
+                </p>
               </div>
-              <button onClick={() => { setLotSelectionItem(null); setLotSelectionQtds({}); }} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground"><X className="h-5 w-5" /></button>
+              <button onClick={() => { setLotSelectionItem(null); setLotQuantities({}); }} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground">
+                <X className="h-5 w-5" />
+              </button>
             </div>
-            <div className={`max-h-[50vh] overflow-y-auto space-y-2 pr-1 ${darkScrollbarClass}`} style={customScrollStyles}>
+            <div className={`max-h-[60vh] overflow-y-auto space-y-2 pr-1 ${darkScrollbarClass}`} style={customScrollStyles}>
               {lotSelectionItem.lotes?.map(lote => {
-                const disponivel = Number(lote.quantidade_atual || 0);
-                const qtdSelecionada = lotSelectionQtds[lote.id] || 0;
+                const qtdDisponivel = Number(lote.quantidade_atual || 0);
+                const qtdSelecionada = lotQuantities[lote.id] || 0;
+                const precoLote = resolvePrecoLote(lote.preco_venda_lote, lotSelectionItem.preco_venda);
 
                 return (
-                  <div key={lote.id} className={`p-3 rounded-lg border transition-all flex flex-col gap-2 ${qtdSelecionada > 0 ? 'border-primary/60 bg-primary/5 shadow-sm' : 'border-border bg-secondary/50'}`}>
+                  <div
+                    key={lote.id}
+                    className={`w-full text-left p-3 rounded-lg border transition-all flex flex-col gap-2 ${
+                      qtdSelecionada > 0
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border bg-secondary/50'
+                    }`}
+                  >
                     <div className="flex justify-between items-start w-full">
                       <div className="flex flex-col">
-                        <span className="font-bold text-sm text-primary">Cód Lote: {lote.codigo}</span>
+                        <span className="font-bold text-sm text-primary">
+                          Cód Lote: {lote.codigo}
+                        </span>
                         {lote.nome_produto_lote && lote.nome_produto_lote !== lotSelectionItem.nome && (
-                           <span className="text-xs font-semibold text-secondary-foreground mt-0.5">{lote.nome_produto_lote}</span>
+                          <span className="text-xs font-semibold text-secondary-foreground mt-0.5">
+                            {lote.nome_produto_lote}
+                          </span>
                         )}
-                        {lote.data_validade && (<span className="text-[11px] text-muted-foreground mt-0.5">Validade: <span className="font-medium text-foreground">{lote.data_validade.split('T')[0].split('-').reverse().join('/')}</span></span>)}
-                      </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-sm font-bold text-primary">{fCurrency(lote.preco_venda_lote || lotSelectionItem.preco_venda)}</span>
-                        <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded shadow-sm">Disponível: <span className={disponivel <= 0 ? 'text-red-500' : 'text-green-500'}>{disponivel}</span></span>
-                      </div>
-                    </div>
-
-                    {lote.observacao && (
-                      <div className="p-2 bg-background/50 rounded border text-xs italic text-muted-foreground flex items-start gap-1.5">
-                        <Info className="h-3.5 w-3.5 mt-0.5 shrink-0 text-blue-500" /><span>{lote.observacao}</span>
-                      </div>
-                    )}
-
-                    {/* Controle de quantidade do lote */}
-                    <div className="flex items-center justify-between pt-2 border-t border-border/50">
-                      <span className="text-[10px] font-bold text-muted-foreground uppercase">Quantidade a vender:</span>
-                      <div className="flex items-center gap-2">
-                        <div className="flex items-center rounded-lg border border-border bg-secondary">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLotSelectionQtds(prev => ({
-                                ...prev,
-                                [lote.id]: Math.max(0, (prev[lote.id] || 0) - 1)
-                              }));
-                            }}
-                            disabled={qtdSelecionada <= 0}
-                            className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-l-lg disabled:opacity-30"
-                          >
-                            <Minus className="h-3 w-3" />
-                          </button>
-                          <input
-                            type="number"
-                            value={qtdSelecionada || ''}
-                            onChange={(e) => {
-                              const val = Math.max(0, Math.min(disponivel, Number(e.target.value) || 0));
-                              setLotSelectionQtds(prev => ({ ...prev, [lote.id]: val }));
-                            }}
-                            className="h-8 w-14 text-center text-sm font-mono font-bold border-x border-border bg-background outline-none"
-                            min={0}
-                            max={disponivel}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLotSelectionQtds(prev => ({
-                                ...prev,
-                                [lote.id]: Math.min(disponivel, (prev[lote.id] || 0) + 1)
-                              }));
-                            }}
-                            disabled={qtdSelecionada >= disponivel}
-                            className="h-8 w-8 flex items-center justify-center hover:bg-background rounded-r-lg disabled:opacity-30"
-                          >
-                            <Plus className="h-3 w-3" />
-                          </button>
-                        </div>
-                        {qtdSelecionada > 0 && (
-                          <span className="text-xs font-mono font-bold text-primary">
-                            = {fCurrency(qtdSelecionada * (Number(lote.preco_venda_lote) || lotSelectionItem.preco_venda))}
+                        {lote.observacao && (
+                          <span className="text-[11px] text-blue-400 font-medium mt-0.5 flex items-center gap-1">
+                            <Info className="h-3 w-3" /> {lote.observacao}
+                          </span>
+                        )}
+                        {lote.data_validade && (
+                          <span className="text-[11px] text-muted-foreground mt-0.5">
+                            Validade:{' '}
+                            <span className="font-medium text-foreground">
+                              {lote.data_validade.split('T')[0].split('-').reverse().join('/')}
+                            </span>
                           </span>
                         )}
                       </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-sm font-bold text-primary">
+                          {fCurrency(precoLote)}
+                        </span>
+                        <span className="text-xs font-mono font-bold bg-background px-2 py-1 rounded shadow-sm">
+                          Disponível:{' '}
+                          <span className={qtdDisponivel <= 0 ? 'text-red-500' : 'text-green-500'}>
+                            {qtdDisponivel}
+                          </span>
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* CONTROLE DE QUANTIDADE */}
+                    <div className="flex items-center justify-between pt-2 border-t border-border/50">
+                      <span className="text-[10px] font-bold text-muted-foreground uppercase">
+                        Quantidade:
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLotQuantities((prev) => ({
+                              ...prev,
+                              [lote.id]: Math.max(0, (prev[lote.id] || 0) - 1),
+                            }))
+                          }
+                          disabled={qtdSelecionada <= 0}
+                          className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-secondary hover:bg-background disabled:opacity-30"
+                        >
+                          <Minus className="h-3 w-3" />
+                        </button>
+                        <input
+                          type="number"
+                          min={0}
+                          max={qtdDisponivel}
+                          value={qtdSelecionada || ''}
+                          onChange={(e) => {
+                            const val = Math.min(
+                              Math.max(0, Number(e.target.value) || 0),
+                              qtdDisponivel
+                            );
+                            setLotQuantities((prev) => ({
+                              ...prev,
+                              [lote.id]: val,
+                            }));
+                          }}
+                          className="w-16 h-8 text-center bg-background border border-border rounded-lg text-sm font-mono font-bold"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setLotQuantities((prev) => ({
+                              ...prev,
+                              [lote.id]: Math.min(
+                                (prev[lote.id] || 0) + 1,
+                                qtdDisponivel
+                              ),
+                            }))
+                          }
+                          disabled={qtdSelecionada >= qtdDisponivel}
+                          className="h-8 w-8 flex items-center justify-center rounded-lg border border-border bg-secondary hover:bg-background disabled:opacity-30"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </button>
+                      </div>
+                      {qtdSelecionada > 0 && (
+                        <span className="text-xs font-mono font-bold text-primary">
+                          = {fCurrency(precoLote * qtdSelecionada)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            {/* Resumo e botão de confirmação */}
-            <div className="space-y-3 pt-2 border-t border-border">
-              {lotSelectionTotalQty > 0 && (
-                <div className="flex justify-between items-center p-2 rounded-lg bg-primary/5 border border-primary/20">
-                  <span className="text-xs font-bold text-muted-foreground uppercase">Total selecionado</span>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono font-bold">{lotSelectionTotalQty} un.</span>
-                    <span className="text-sm font-mono font-bold text-primary">{fCurrency(lotSelectionTotalValue)}</span>
+            {/* RESUMO E BOTÕES */}
+            {(() => {
+              const totalSelecionado = Object.values(lotQuantities).reduce(
+                (s, q) => s + (q || 0),
+                0
+              );
+              const totalValorSelecionado = (lotSelectionItem.lotes || []).reduce(
+                (s, lote) => {
+                  const qty = lotQuantities[lote.id] || 0;
+                  const preco = resolvePrecoLote(lote.preco_venda_lote, lotSelectionItem.preco_venda);
+                  return s + preco * qty;
+                },
+                0
+              );
+              return (
+                <div className="space-y-3 pt-2 border-t border-border">
+                  {totalSelecionado > 0 && (
+                    <div className="flex justify-between items-center p-2 rounded-lg bg-primary/5 border border-primary/20">
+                      <span className="text-xs font-bold text-muted-foreground">
+                        {totalSelecionado} item(ns) de{' '}
+                        {Object.values(lotQuantities).filter((q) => q > 0).length}{' '}
+                        lote(s)
+                      </span>
+                      <span className="text-sm font-mono font-bold text-primary">
+                        {fCurrency(totalValorSelecionado)}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => {
+                        setLotSelectionItem(null);
+                        setLotQuantities({});
+                      }}
+                      className="h-9 px-4 rounded-lg border text-sm font-medium hover:bg-secondary"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      disabled={totalSelecionado === 0}
+                      onClick={() => {
+                        const lotes = lotSelectionItem.lotes || [];
+                        lotes.forEach((lote) => {
+                          const qty = lotQuantities[lote.id] || 0;
+                          if (qty > 0) {
+                            handleSelectSpecificLot(lotSelectionItem, lote, qty);
+                          }
+                        });
+                        setLotSelectionItem(null);
+                        setLotQuantities({});
+                      }}
+                      className="h-9 px-5 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <Check className="h-4 w-4" /> Adicionar ao Carrinho
+                    </button>
                   </div>
                 </div>
-              )}
-              <div className="flex justify-end gap-2">
-                <button onClick={() => { setLotSelectionItem(null); setLotSelectionQtds({}); }} className="h-9 px-4 rounded-lg border text-sm font-medium hover:bg-secondary">Cancelar</button>
-                <button 
-                  onClick={handleConfirmLotSelection}
-                  disabled={lotSelectionTotalQty === 0}
-                  className="h-9 px-5 rounded-lg bg-primary text-primary-foreground text-sm font-bold shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  <Check className="h-4 w-4" /> Adicionar ao Carrinho
-                </button>
-              </div>
-            </div>
+              );
+            })()}
           </div>
         </div>
       )}
