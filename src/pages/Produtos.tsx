@@ -55,6 +55,11 @@ const emptyProduct: Partial<Produto> = {
 
 const UNIDADES_PADRAO = ['Par', 'Und', 'Pç', 'Kg', 'Cm', 'Mt', 'm²', 'Lt', 'Cx'];
 
+// Função utilitária para normalizar texto removendo acentos e diacríticos
+function normalizeText(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 export default function Produtos() {
   const { user, isAdmin } = useAuth();
   const [produtos, setProdutos] = useState<Produto[]>([]);
@@ -248,25 +253,14 @@ export default function Produtos() {
     return { status: 'ok', qtd: 0 };
   }
 
-  // ═══ BUSCA INTELIGENTE IMPLEMENTADA ═══
-  // Alteração 1: Busca por múltiplos termos (palavras separadas)
-  // Alteração 2: Inclusão dos códigos de lote na busca
+  // ═══ BUSCA INTELIGENTE COM SUPORTE A ACENTOS ═══
   const filtered = produtos.filter((p) => {
-    // Divide o texto de busca em termos individuais, removendo espaços extras
-    const searchTerms = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const searchTerms = normalizeText(search.trim()).split(/\s+/).filter(Boolean);
     
-    // Monta um texto único com todos os campos pesquisáveis do produto
-    // Inclui também todos os códigos de barras dos lotes associados
-    const searchableText = [
-      p.nome,
-      p.marca, 
-      p.codigo,
-      p.categoria,
-      ...(p.lotes?.map(l => l.codigo_barras) || [])
-    ].filter(Boolean).join(' ').toLowerCase();
+    const searchableText = normalizeText(
+      [p.nome, p.marca, p.codigo, p.categoria, ...(p.lotes?.map(l => l.codigo_barras) || [])].filter(Boolean).join(' ')
+    );
 
-    // Verifica se TODOS os termos digitados estão presentes no texto pesquisável
-    // Isso permite buscas como "makita disco" encontrar "DISCO DE CORTE MAKITA"
     const matchesSearch = searchTerms.length === 0 || searchTerms.every(term => searchableText.includes(term));
     
     const matchesEstoque = p.estoque_atual <= maxEstoqueFilter;
@@ -919,8 +913,8 @@ export default function Produtos() {
 
   const historicoLotesFiltrados = (editing?.lotes || [])
     .filter(l => {
-      const term = historicoBusca.toLowerCase();
-      const matchBusca = (l.codigo_barras || '').toLowerCase().includes(term) || (l.observacao || '').toLowerCase().includes(term);
+      const term = normalizeText(historicoBusca);
+      const matchBusca = normalizeText(l.codigo_barras || '').includes(term) || normalizeText(l.observacao || '').includes(term);
       const matchData = historicoFiltroData ? l.data_entrada === historicoFiltroData : true;
       return matchBusca && matchData;
     })
@@ -1027,7 +1021,7 @@ export default function Produtos() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <input
             value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome, marca, código, lotes... (digite vários termos)"
+            placeholder="Buscar por nome, marca, código, lotes... (ignora acentos)"
             className="w-full h-10 pl-10 pr-4 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-1 focus:ring-primary shadow-sm"
           />
         </div>
@@ -1327,7 +1321,7 @@ export default function Produtos() {
                   {showCategoryDropdown && categoriasExistentes.length > 0 && (
                     <ul className="absolute z-50 w-full mt-1 bg-card border border-border rounded-xl shadow-lg max-h-[160px] overflow-y-auto scrollbar-thin scrollbar-thumb-muted">
                       {categoriasExistentes
-                        .filter(c => c.toLowerCase().includes((form.categoria || '').toLowerCase()))
+                        .filter(c => normalizeText(c).includes(normalizeText(form.categoria || '')))
                         .map(c => (
                         <li 
                           key={c} 
