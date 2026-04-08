@@ -86,29 +86,39 @@ export default function ContasReceber() {
   }
 
   const filtered = contas.filter((c) => {
-    const searchLower = search.toLowerCase();
-    const matchSearch = 
-      c.descricao?.toLowerCase().includes(searchLower) || 
-      c.devedor_id?.toLowerCase().includes(searchLower) ||
-      c.categoria?.toLowerCase().includes(searchLower) ||
-      c.condicao_pagamento?.toLowerCase().includes(searchLower);
+  const searchLower = search.toLowerCase();
+  const matchSearch = 
+    c.descricao?.toLowerCase().includes(searchLower) || 
+    c.devedor_id?.toLowerCase().includes(searchLower) ||
+    c.categoria?.toLowerCase().includes(searchLower) ||
+    c.condicao_pagamento?.toLowerCase().includes(searchLower);
 
-    const isVencida = parseISO(c.data_vencimento) < today && c.status === 'receber';
-    const matchStatus = filterStatus === 'todos' || 
-                        (filterStatus === 'vencido' 
-                        ? isVencida : c.status === filterStatus);
-    const matchCat = !filterCategoria || c.categoria === filterCategoria;
-    const matchDate = (!filterDate.start || (c.data_vencimento >= filterDate.start)) &&
-                      (!filterDate.end || (c.data_vencimento <= filterDate.end));
+  const isVencida = c.data_vencimento 
+    ? parseISO(c.data_vencimento) < today && c.status === 'receber'
+    : false;
 
-    return matchSearch && matchStatus && matchCat && matchDate;
-  });
+  const matchStatus = filterStatus === 'todos' || 
+                      (filterStatus === 'vencido' 
+                      ? isVencida : c.status === filterStatus);
+  const matchCat = !filterCategoria || c.categoria === filterCategoria;
+  const matchDate = (!filterDate.start || (c.data_vencimento && c.data_vencimento >= filterDate.start)) &&
+                    (!filterDate.end || (c.data_vencimento && c.data_vencimento <= filterDate.end));
 
-  const totals = {
-    receber: contas.filter(c => c.status === 'receber').reduce((s, c) => s + Number(c.valor), 0),
-    recebido: contas.filter(c => c.status === 'recebido').reduce((s, c) => s + Number(c.valor), 0),
-    vencido: contas.filter(c => c.status === 'receber' && c.data_vencimento && parseISO(c.data_vencimento) < today).reduce((s, c) => s + Number(c.valor), 0)
-  };
+  return matchSearch && matchStatus && matchCat && matchDate;
+});
+
+const totals = {
+  receber: contas
+    .filter(c => c.status === 'receber')
+    .reduce((s, c) => s + Number(c.valor), 0),
+  recebido: contas
+    .filter(c => c.status === 'recebido')
+    .reduce((s, c) => s + Number(c.valor), 0),
+  vencido: contas
+    .filter(c => c.status === 'receber' && !!c.data_vencimento && parseISO(c.data_vencimento) < today)
+    .reduce((s, c) => s + Number(c.valor), 0)
+};
+
 
   // ✅ FUNÇÃO CORRIGIDA: Trata strings vazias e remove campos protegidos
   async function handleSave() {
